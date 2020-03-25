@@ -4,7 +4,9 @@
  *  Created on: 2014. 11. 20.
  *      Author: Keunhong Lee
  */
+
 //JIN BRANCH TEST222
+
 
 
 #ifndef E_TCPASSIGNMENT_HPP_
@@ -20,7 +22,7 @@
 
 
 #include <E/E_TimerModule.hpp>
-
+#include <stdbool.h>
 namespace E
 {
 
