@@ -20,7 +20,7 @@
 
 
 #include <E/E_TimerModule.hpp>
-
+#include <stdbool.h>
 namespace E
 {
 
