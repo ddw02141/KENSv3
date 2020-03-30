@@ -23,6 +23,7 @@
 
 #include <E/E_TimerModule.hpp>
 #include <stdbool.h>
+
 namespace E
 {
 
@@ -37,7 +38,12 @@ public:
 	TCPAssignment(Host* host);
 	virtual void initialize();
 	virtual void finalize();
+	virtual int syscall_socket(UUID syscallUUID, int pid, int domain, int type__unused, int protocol);
+	virtual void syscall_close(UUID syscallUUID, int pid, int fd);
 	virtual ~TCPAssignment();
+	int sockfd;
+	int exit_status;
+	Host *host;
 protected:
 	virtual void systemCallback(UUID syscallUUID, int pid, const SystemCallParameter& param) final;
 	virtual void packetArrived(std::string fromModule, Packet* packet) final;
