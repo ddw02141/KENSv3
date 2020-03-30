@@ -42,8 +42,8 @@ public:
 	TCPAssignment(Host* host);
 	virtual void initialize();
 	virtual void finalize();
-	virtual pair sa_to_pair(struct sockaddr* sa);
-	virtual void syscall_socket(UUID syscallUUID, int pid, int domain, int type__unused, int protocol);
+	virtual pair* sa_to_pair(struct sockaddr* sa);
+	virtual int syscall_socket(UUID syscallUUID, int pid, int domain, int type__unused, int protocol);
 	virtual int syscall_close(UUID syscallUUID, int pid, int fd);
 	virtual int syscall_bind(UUID syscallUUID, int pid, int sockfd, struct sockaddr *addr, socklen_t addrlen);
 	virtual int syscall_getsockname(UUID syscallUUID, int pid, int sockfd, struct sockaddr *addr, socklen_t *addrlen);
@@ -58,7 +58,7 @@ public:
 	Host *host;
 	std::map<pair, pair> server_client_mapping;
 	std::map<pair, pair> client_server_mapping;
-	std::map<int, pair> sockfd_pair_mapping;
+	std::map<int, pair*> sockfd_pair_mapping;
 
 protected:
 	virtual void systemCallback(UUID syscallUUID, int pid, const SystemCallParameter& param) final;
