@@ -33,10 +33,10 @@ TCPAssignment::TCPAssignment(Host* host) : HostModule("TCP", host),
 	this->bind_status = 0;
 	this->getsockname_status = 0;
 	this->getpeername_status = 0;
-	this->INADDR_ANY_exists = false;
 	this->server_client_mapping = std::map<pair, pair>();
 	this->client_server_mapping = std::map<pair, pair>();
 	this->sockfd_pair_mapping = std::map<int, pair*>();
+	this->INADDR_ANY_PORTS = std::vector<unsigned short>();
 }
 
 TCPAssignment::~TCPAssignment()
@@ -44,6 +44,7 @@ TCPAssignment::~TCPAssignment()
 	this->server_client_mapping.clear();
 	this->client_server_mapping.clear();
 	this->sockfd_pair_mapping.clear();
+	this->INADDR_ANY_PORTS.clear();
 }
 
 void TCPAssignment::initialize()
@@ -62,8 +63,9 @@ pair* TCPAssignment::sa_to_pair(struct sockaddr* sa){
 	char *ipAddress = inet_ntoa(sin->sin_addr);
 	unsigned short port = ntohs(sin->sin_port);
 	printf("IP address: %s Port : %d\n", ipAddress, port);
-	pair p = std::make_pair(ipAddress, port);
-	return &p;
+	pair *p = (pair*)malloc(sizeof(pair));
+	*p = std::make_pair(ipAddress, port);
+	return p;
 }
 
 int TCPAssignment::syscall_socket(UUID syscallUUID, int pid, int domain, int type__unused, int protocol){
@@ -92,27 +94,59 @@ int TCPAssignment::syscall_close(UUID syscallUUID, int pid, int fd){
 	// }
 	// this->sockfd_pair_mapping.erase(fd);
 	if(sockfd_pair_mapping.count(fd)==0) return -1;
+	pair *p = sockfd_pair_mapping[fd];
+	if(p!=NULL){
+		struct sockaddr_in* sin = (struct sockaddr_in*)malloc(sizeof(struct sockaddr_in));
+		inet_aton(p->first, &(sin->sin_addr));
+		unsigned short port = p->second;
+		if(ntohl(sin->sin_addr.s_addr) == INADDR_ANY){
+			auto it = find(this->INADDR_ANY_PORTS.begin(), this->INADDR_ANY_PORTS.end(), port);
+			if(it != this->INADDR_ANY_PORTS.end()){
+				this->INADDR_ANY_PORTS.erase(it);
+			}
+		}
+	}
+	sockfd_pair_mapping.erase(fd);
 	removeFileDescriptor(pid, fd);
 	// shutdown(fd, 2);
 	return errno == 0 ? 0 : -1;
 }
 
 int TCPAssignment::syscall_bind(UUID syscallUUID, int pid, int sockfd, struct sockaddr *addr, socklen_t addrlen){
-	printf("A\n");
 	if(this->sockfd_pair_mapping.count(sockfd)==0){
 		printf("Socket first then bind\n");
 		return -1;
 	}
-	printf("B\n");
 	if(this->sockfd_pair_mapping[sockfd]!=NULL){
 		printf("Bind already Exists in sockfd %d => %s:%d\n", 
 			sockfd, this->sockfd_pair_mapping[sockfd]->first, this->sockfd_pair_mapping[sockfd]->second);
 		return -1;
 	}
+	struct sockaddr_in* sin;
+	sin = (struct sockaddr_in*)addr;
+	unsigned short port = ntohs(sin->sin_port);
+	if(!this->INADDR_ANY_PORTS.empty()){
+		auto it = find(this->INADDR_ANY_PORTS.begin(), this->INADDR_ANY_PORTS.end(), port);
+		if(it != this->INADDR_ANY_PORTS.end()){
+			printf("Same Port with INADDR_ANY!!!\n");
+			return -1;
+		}
+	}
+
+	
+	
+	if(ntohl(sin->sin_addr.s_addr) == INADDR_ANY){ // INADDR_ANY
+		
+		this->INADDR_ANY_PORTS.push_back(port);
+		printf("this->INADDR_ANY_PORTS push_back %d\n", port);
+	}
 	
 	printf("dst_p\n");
 	pair *dst_p = sa_to_pair(addr);
 	this->sockfd_pair_mapping[sockfd] = dst_p;
+	
+	
+	printf("dst_p->first : %s\n", dst_p->first);
 	// this->server_client_mapping[p] = dst_p;
 	// this->client_server_mapping[dst_p] = p;
 	
@@ -126,11 +160,20 @@ int TCPAssignment::syscall_bind(UUID syscallUUID, int pid, int sockfd, struct so
 int TCPAssignment::syscall_getsockname(UUID syscallUUID, int pid, int sockfd, struct sockaddr *addr, socklen_t *addrlen){
 	// int res = getsockname(sockfd, addr, addrlen);
 	// printf("getsockname : %d sockfd : %d errno : %d\n", res, sockfd, errno);
-	// if(this->sockfd_pair_mapping.count(sockfd)==0){
-	// 	printf("Sockname does not exist!\n");
-	// 	return -1;
-	// }
-	// pair p = this->sockfd_pair_mapping[sockfd];
+	if(this->sockfd_pair_mapping.count(sockfd)==0){
+		printf("Sockname does not exist!\n");
+		return -1;
+	}
+	if(this->sockfd_pair_mapping[sockfd]==NULL){
+		printf("Socket exists but not bind\n");
+		return -1;
+	}
+	pair *p = this->sockfd_pair_mapping[sockfd];
+	struct sockaddr_in* sin;
+	sin = (struct sockaddr_in*)addr;
+	inet_aton(p->first, &(sin->sin_addr));
+	sin->sin_port = htons(p->second);
+	sin->sin_family = AF_INET;
 
 	return 0;
 }

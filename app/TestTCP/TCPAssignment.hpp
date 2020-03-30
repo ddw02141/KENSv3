@@ -54,11 +54,11 @@ public:
 	int bind_status;
 	int getsockname_status;
 	int getpeername_status;
-	bool INADDR_ANY_exists;
 	Host *host;
 	std::map<pair, pair> server_client_mapping;
 	std::map<pair, pair> client_server_mapping;
 	std::map<int, pair*> sockfd_pair_mapping;
+	std::vector<unsigned short> INADDR_ANY_PORTS;
 
 protected:
 	virtual void systemCallback(UUID syscallUUID, int pid, const SystemCallParameter& param) final;
