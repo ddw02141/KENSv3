@@ -25,7 +25,7 @@
 #include <stdbool.h>
 #include <E/E_Common.hpp>
 
-// typedef std::pair<char*, unsigned short> pair; 
+typedef std::pair<char*, unsigned short> pair; 
 
 namespace E
 {
@@ -42,18 +42,23 @@ public:
 	TCPAssignment(Host* host);
 	virtual void initialize();
 	virtual void finalize();
-	virtual struct sockaddr_in* sa_to_sin(struct sockaddr* sa);
+	virtual pair sa_to_pair(struct sockaddr* sa);
 	virtual void syscall_socket(UUID syscallUUID, int pid, int domain, int type__unused, int protocol);
 	virtual int syscall_close(UUID syscallUUID, int pid, int fd);
 	virtual int syscall_bind(UUID syscallUUID, int pid, int sockfd, struct sockaddr *addr, socklen_t addrlen);
+	virtual int syscall_getsockname(UUID syscallUUID, int pid, int sockfd, struct sockaddr *addr, socklen_t *addrlen);
 	virtual int syscall_getpeername(UUID syscallUUID, int pid, int sockfd, struct sockaddr *addr, socklen_t *addrlen);
 	virtual ~TCPAssignment();
 	int sockfd;
 	int close_status;
 	int bind_status;
+	int getsockname_status;
 	int getpeername_status;
+	bool INADDR_ANY_exists;
 	Host *host;
-	std::map<struct sockaddr*, struct sockaddr*> mapping;
+	std::map<pair, pair> server_client_mapping;
+	std::map<pair, pair> client_server_mapping;
+	std::map<int, pair> sockfd_pair_mapping;
 
 protected:
 	virtual void systemCallback(UUID syscallUUID, int pid, const SystemCallParameter& param) final;

@@ -31,13 +31,19 @@ TCPAssignment::TCPAssignment(Host* host) : HostModule("TCP", host),
 	this->sockfd = 0;
 	this->close_status = 0;
 	this->bind_status = 0;
+	this->getsockname_status = 0;
 	this->getpeername_status = 0;
-	this->mapping = std::map<struct sockaddr*, struct sockaddr*>();
+	this->INADDR_ANY_exists = false;
+	this->server_client_mapping = std::map<pair, pair>();
+	this->client_server_mapping = std::map<pair, pair>();
+	this->sockfd_pair_mapping = std::map<int, pair>();
 }
 
 TCPAssignment::~TCPAssignment()
 {
-	this->mapping.clear();
+	this->server_client_mapping.clear();
+	this->client_server_mapping.clear();
+	this->sockfd_pair_mapping.clear();
 }
 
 void TCPAssignment::initialize()
@@ -50,15 +56,13 @@ void TCPAssignment::finalize()
 
 }
 
-struct sockaddr_in* TCPAssignment::sa_to_sin(struct sockaddr* sa){
+pair TCPAssignment::sa_to_pair(struct sockaddr* sa){
 	struct sockaddr_in* sin;
-	std::memset(sin, 0, sizeof *sin);
-	std::memcpy(sin, sa, sizeof(*sa));
-	return sin;
-	// char *ipAddress = inet_ntoa(sin->sin_addr);
-	// unsigned short port = sin->sin_port;
-	// // printf("IP address: %s Port : %d\n", s, sin->sin_port);
-	// return std::make_pair(ipAddress, port);
+	sin = (struct sockaddr_in*)sa;
+	char *ipAddress = inet_ntoa(sin->sin_addr);
+	unsigned short port = ntohs(sin->sin_port);
+	printf("IP address: %s Port : %d\n", ipAddress, port);
+	return std::make_pair(ipAddress, port);
 }
 
 void TCPAssignment::syscall_socket(UUID syscallUUID, int pid, int domain, int type__unused, int protocol){
@@ -67,38 +71,65 @@ void TCPAssignment::syscall_socket(UUID syscallUUID, int pid, int domain, int ty
 	do{
 		this->sockfd = createFileDescriptor(pid);
 	}while(this->sockfd < 3);
-	// printf("this->sockfd in syscall_socket: %d\n", this->sockfd);
-	// socket(domain, type__unused, protocol);
-	struct sockaddr *addr;
-	socklen_t addrlen;
-	// printf("this->sockfd : %d\n", this->sockfd);
-	syscall_getpeername(syscallUUID, pid, this->sockfd, 
-	static_cast<struct sockaddr *>((void*)(addr)), static_cast<socklen_t*>((void*)(addrlen)));
-	this->mapping[addr] = NULL;
 	return;
 }
 	
 int TCPAssignment::syscall_close(UUID syscallUUID, int pid, int fd){
 	// return shutdown(param1, 2);
-	struct sockaddr *addr;
-	socklen_t addrlen;
-	// printf("this->sockfd : %d\n", this->sockfd);
-	syscall_getpeername(syscallUUID, pid, fd, 
-	static_cast<struct sockaddr *>((void*)(addr)), static_cast<socklen_t*>((void*)(addrlen)));
-	this->mapping.erase(addr);
+	// struct sockaddr *sa;
+	// socklen_t salen;
+	// syscall_getpeername(syscallUUID, pid, fd, 
+	// static_cast<struct sockaddr *>((void*)(sa)), static_cast<socklen_t*>((void*)(salen)));
+	// pair p = TCPAssignment::sa_to_pair(sa);
+	// this->server_client_mapping.erase(p);
+	// this->client_server_mapping.erase(p);
+	// for(auto element:server_client_mapping){
+
+	// }
+	// for(auto element:client_server_mapping){
+		
+	// }
+	// this->sockfd_pair_mapping.erase(fd);
 	removeFileDescriptor(pid, fd);
 	// shutdown(fd, 2);
 	return errno == 0 ? 0 : -1;
 }
 
 int TCPAssignment::syscall_bind(UUID syscallUUID, int pid, int sockfd, struct sockaddr *addr, socklen_t addrlen){
-	int res = bind(sockfd, addr, addrlen);
-	printf("sockfd : %d res : %d errno : %d\n", sockfd, res, errno);
-	return res == 0 ? 0 : -1;
+	// if(this->sockfd_pair_mapping.count(sockfd)==0){
+	// 	printf("Please do Socket before Bind\n");
+	// 	return -1;
+	// }
+	// this->sockfd_pair_mapping[sockfd] = p;
+	struct sockaddr *sa;
+	socklen_t salen;
+	syscall_getsockname(syscallUUID, pid, sockfd, 
+	static_cast<struct sockaddr *>((void*)(sa)), static_cast<socklen_t*>((void*)(salen)));
+	pair p = TCPAssignment::sa_to_pair(sa);
+	if(this->server_client_mapping.count(p)!=0){
+		printf("Bind already Exists\n");
+		return -1;
+	}
+	pair dst_p = sa_to_pair(addr);
+	this->server_client_mapping[p] = dst_p;
+	this->client_server_mapping[dst_p] = p;
+	
+	// if(this->server_client_mapping.count(this->server_client_mapping[addr])!=0) return -1;
+	// int res = bind(sockfd, addr, addrlen);
+	// printf("sockfd : %d res : %d errno : %d\n", sockfd, res, errno);
+
+	return 0;
+}
+
+int TCPAssignment::syscall_getsockname(UUID syscallUUID, int pid, int sockfd, struct sockaddr *addr, socklen_t *addrlen){
+	int res = getsockname(sockfd, addr, addrlen);
+	printf("getsockname : %d sockfd : %d errno : %d\n", res, sockfd, errno);
+	return errno == 0 ? 0 : -1;
 }
 
 int TCPAssignment::syscall_getpeername(UUID syscallUUID, int pid, int sockfd, struct sockaddr *addr, socklen_t *addrlen){
 	int res = getpeername(sockfd, addr, addrlen);
+	printf("getpeername : %d errno : %d\n", res, errno);
 	return errno == 0 ? 0 : -1;
 }
 
@@ -141,15 +172,18 @@ void TCPAssignment::systemCallback(UUID syscallUUID, int pid, const SystemCallPa
 		//		static_cast<socklen_t*>(param.param3_ptr));
 		break;
 	case BIND:
-		this->syscall_bind(syscallUUID, pid, param.param1_int,
+		this->bind_status = this->syscall_bind(syscallUUID, pid, param.param1_int,
 				static_cast<struct sockaddr *>(param.param2_ptr),
 				(socklen_t) param.param3_int);
+		printf("this->bind_status : %d\n", this->bind_status);
 		SystemCallInterface::returnSystemCall(syscallUUID, this->bind_status);
 		break;
 	case GETSOCKNAME:
-		//this->syscall_getsockname(syscallUUID, pid, param.param1_int,
-		//		static_cast<struct sockaddr *>(param.param2_ptr),
-		//		static_cast<socklen_t*>(param.param3_ptr));
+		this->getsockname_status = this->syscall_getsockname(syscallUUID, pid, param.param1_int,
+				static_cast<struct sockaddr *>(param.param2_ptr),
+				static_cast<socklen_t*>(param.param3_ptr));
+		SystemCallInterface::returnSystemCall(syscallUUID, this->getpeername_status);
+
 		break;
 	case GETPEERNAME:
 		this->getpeername_status = this->syscall_getpeername(syscallUUID, pid, param.param1_int,
