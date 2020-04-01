@@ -42,7 +42,8 @@ public:
 	TCPAssignment(Host* host);
 	virtual void initialize();
 	virtual void finalize();
-	virtual ip_port* sa_to_pair(struct sockaddr* sa);
+	virtual ip_port* sa2ip_port(struct sockaddr* sa);
+	virtual void ip_port2sa(struct sockaddr* sa, ip_port* p);
 	virtual int syscall_socket(UUID syscallUUID, int pid, int domain, int type__unused, int protocol);
 	virtual int syscall_close(UUID syscallUUID, int pid, int fd);
 	virtual int syscall_bind(UUID syscallUUID, int pid, int sockfd, struct sockaddr *addr, socklen_t addrlen);
