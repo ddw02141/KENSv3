@@ -17,6 +17,8 @@
 #include "TCPAssignment.hpp"
 #include <E/Networking/TCP/E_TCPApplication.hpp>
 #include <E/Networking/E_Host.hpp>
+#include <netinet/in.h>
+
 
 namespace E
 {
@@ -53,7 +55,7 @@ void TCPAssignment::finalize()
 
 }
 
-ip_port* TCPAssignment::sa_to_pair(struct sockaddr* sa){
+ip_port* TCPAssignment::sa2ip_port(struct sockaddr* sa){
 	struct sockaddr_in* sin;
 	sin = (struct sockaddr_in*)sa;
 	char *ipAddress = inet_ntoa(sin->sin_addr);
@@ -62,6 +64,14 @@ ip_port* TCPAssignment::sa_to_pair(struct sockaddr* sa){
 	ip_port *p = (ip_port*)malloc(sizeof(ip_port));
 	*p = std::make_pair(ipAddress, port);
 	return p;
+}
+
+void TCPAssignment::ip_port2sa(struct sockaddr* sa, ip_port* p){
+	struct sockaddr_in* sin;
+	sin = (struct sockaddr_in*)sa;
+	inet_aton(p->first, &(sin->sin_addr)); 
+	sin->sin_port = htons(p->second);
+	sin->sin_family = AF_INET;
 }
 
 int TCPAssignment::syscall_socket(UUID syscallUUID, int pid, int domain, int type__unused, int protocol){
@@ -79,7 +89,7 @@ int TCPAssignment::syscall_close(UUID syscallUUID, int pid, int fd){
 	// socklen_t salen;
 	// syscall_getpeername(syscallUUID, pid, fd, 
 	// static_cast<struct sockaddr *>((void*)(sa)), static_cast<socklen_t*>((void*)(salen)));
-	// pair p = TCPAssignment::sa_to_pair(sa);
+	// pair p = TCPAssignment::sa2ip_port(sa);
 	// this->server_client_mapping.erase(p);
 	// this->client_server_mapping.erase(p);
 	// for(auto element:server_client_mapping){
@@ -92,8 +102,10 @@ int TCPAssignment::syscall_close(UUID syscallUUID, int pid, int fd){
 	if(sockfd_pair_mapping.count(fd)==0) return -1;
 	ip_port *p = sockfd_pair_mapping[fd];
 	if(p!=NULL){
-		struct sockaddr_in* sin = (struct sockaddr_in*)malloc(sizeof(struct sockaddr_in));
-		inet_aton(p->first, &(sin->sin_addr));
+		struct sockaddr* sa = (struct sockaddr*)malloc(sizeof(struct sockaddr));
+		ip_port2sa(sa, p);
+		struct sockaddr_in* sin = (struct sockaddr_in*)sa;
+		// inet_aton(p->first, &(sin->sin_addr));
 		unsigned short port = p->second;
 		if(ntohl(sin->sin_addr.s_addr) == INADDR_ANY){
 			auto it = find(this->INADDR_ANY_PORTS.begin(), this->INADDR_ANY_PORTS.end(), port);
@@ -131,14 +143,25 @@ int TCPAssignment::syscall_bind(UUID syscallUUID, int pid, int sockfd, struct so
 
 	
 	
+	
 	if(ntohl(sin->sin_addr.s_addr) == INADDR_ANY){ // INADDR_ANY
+		std::map<int, ip_port*>::iterator it;
+		for(it=sockfd_pair_mapping.begin(); it!=sockfd_pair_mapping.end(); ++it){
+			if(it->second != NULL) // If the sockfd is bound
+			{
+				if( it->second->second == port){
+					return -1;
+				}
+			}
+		}
+
 		
 		this->INADDR_ANY_PORTS.push_back(port);
 		// printf("this->INADDR_ANY_PORTS push_back %d\n", port);
 	}
 	
 	// printf("dst_p\n");
-	ip_port *dst_p = sa_to_pair(addr);
+	ip_port *dst_p = sa2ip_port(addr);
 	this->sockfd_pair_mapping[sockfd] = dst_p;
 	
 	
@@ -165,11 +188,7 @@ int TCPAssignment::syscall_getsockname(UUID syscallUUID, int pid, int sockfd, st
 		return -1;
 	}
 	ip_port *p = this->sockfd_pair_mapping[sockfd];
-	struct sockaddr_in* sin;
-	sin = (struct sockaddr_in*)addr;
-	inet_aton(p->first, &(sin->sin_addr)); 
-	sin->sin_port = htons(p->second);
-	sin->sin_family = AF_INET;
+	ip_port2sa(addr, p);
 
 	return 0;
 }
