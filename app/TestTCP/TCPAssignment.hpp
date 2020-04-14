@@ -28,10 +28,39 @@
 #include <E/E_TimeUtil.hpp>
 
 
-typedef std::pair<char*, unsigned short> ip_port; 
+typedef std::pair<int, int> pid_sockfd;
+
+typedef enum {
+	BOUND,
+	LISTEN, 
+	SYN_SENT, 
+	SYN_RCVD, 
+	ESTAB,
+	FIN_WAIT1,
+	FIN_WAIT2,
+	CLOSE_WAIT,
+	CLOSING,
+	LAST_ACK,
+	TIME_WAIT,
+	CLOSED,
+}Sock_status;
+
+typedef struct Ip_port{
+	char* ipAddr;
+	unsigned short port;
+	Ip_port(char* ip, unsigned short p): ipAddr(ip), port(p) {}
+}Ip_port;
+
+typedef struct Sock{
+	Sock_status sock_status;
+	struct Ip_port *ip_port;
+	// Sock(Sock_status ss, struct Ip_port *ip_port) : sock_status(ss), ip_port(ip_port){}
+}Sock;
 
 namespace E
 {
+
+
 
 class TCPAssignment : public HostModule, public NetworkModule, public SystemCallInterface, private NetworkLog, private TimerModule, public RoutingInfo
 {
@@ -46,8 +75,8 @@ public:
 	virtual void initialize();
 	virtual void finalize();
 	virtual char* ipInt2ipCharptr(uint8_t ip_buffer[4]);
-	virtual ip_port* sa2ip_port(struct sockaddr* sa);
-	virtual void ip_port2sa(struct sockaddr* sa, ip_port* p);
+	virtual struct Ip_port* sa2ip_port(struct sockaddr* sa);
+	virtual void ip_port2sa(struct sockaddr* sa, struct Ip_port *p);
 	virtual void u8from32 (uint8_t u8[4], uint32_t u32);
 	virtual uint32_t u32from8 (uint8_t u8[4]);
 	virtual int syscall_socket(UUID syscallUUID, int pid, int domain, int type__unused, int protocol);
@@ -56,22 +85,28 @@ public:
 	virtual int syscall_connect(UUID syscallUUID, int pid, int sockfd, struct sockaddr *addr, socklen_t addrlen);
 	virtual int syscall_getsockname(UUID syscallUUID, int pid, int sockfd, struct sockaddr *addr, socklen_t *addrlen);
 	virtual int syscall_getpeername(UUID syscallUUID, int pid, int sockfd, struct sockaddr *addr, socklen_t *addrlen);
+	virtual int syscall_listen(UUID syscallUUID, int pid, int sockfd, int backlog);
+	virtual int syscall_accept(UUID syscallUUID, int pid, int sockfd, struct sockaddr *addr, socklen_t *addrlen);
+
 	virtual void block(UUID syscallUUID);
 	virtual void unblock(int status);
 
 	// virtual void TimerCallback(void* payload);
 	virtual ~TCPAssignment();
 	int sockfd;
+	int seqNum;
 	int close_status;
 	int bind_status;
 	int connect_status;
 	int getsockname_status;
 	int getpeername_status;
+	int listen_status;
+	int accept_status;
 	bool lock;
 	UUID blockedUUID;
 	Host *host;
-	std::map<int, ip_port*> sockfd_pair_mapping;
-	std::map<ip_port*, ip_port*> server_client_mapping; 
+	std::map<pid_sockfd, Sock> sock_mapping;
+	std::map<Ip_port*, Ip_port*> server_client_mapping; 
 	std::vector<unsigned short> INADDR_ANY_PORTS;
 
 	
