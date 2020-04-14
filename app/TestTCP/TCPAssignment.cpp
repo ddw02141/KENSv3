@@ -31,7 +31,9 @@ TCPAssignment::TCPAssignment(Host* host) : HostModule("TCP", host),
 		TimerModule(host->getSystem())
 {
 	this->host = host;
-	this->sockfd = 0;
+	this->sockfd = -1;
+	this->accept_status = 0;
+	this->connfds = std::queue<int>(); 
 	this->close_status = 0;
 	this->bind_status = 0;
 	this->connect_status = 0;
@@ -39,20 +41,26 @@ TCPAssignment::TCPAssignment(Host* host) : HostModule("TCP", host),
 	this->accept_status = 0;
 	this->getsockname_status = 0;
 	this->getpeername_status = 0;
-	this->sock_mapping = std::map<pid_sockfd, Sock>();
-	this->server_client_mapping = std::map<Ip_port*, Ip_port*>();
+	this->sock_mapping = std::map<pid_sockfd, Sock*>();
+	this->client_server_mapping = std::map<Ip_port*, Ip_port*>();
+	this->server_client_mapping = std::map<Ip_port*, std::deque<Ip_port*> > ();
 	this->INADDR_ANY_PORTS = std::vector<unsigned short>();
-	this->lock = false;
-	this->blockedUUID = 999;
+	this->connect_lock = false;
+	this->accept_lock = false;
+	this->connect_blockedUUID = 999;
+	this->accept_blockedUUID = 888;
 	this->seqNum = 22;
 }
 
 TCPAssignment::~TCPAssignment()
 {
 	this->sock_mapping.clear();
+	this->client_server_mapping.clear();
+	// Map iterating 하면서 clear 해야함
 	this->server_client_mapping.clear();
 	this->INADDR_ANY_PORTS.clear();
-
+	std::queue<int> empty;
+	std::swap(this->connfds, empty);
 }
 
 void TCPAssignment::initialize()
@@ -65,19 +73,43 @@ void TCPAssignment::finalize()
 
 }
 
-void TCPAssignment::block(UUID syscallUUID){
-	printf("block\n");
-	this->lock = true;
-	this->blockedUUID = syscallUUID;
+void TCPAssignment::connect_block(UUID syscallUUID){
+	printf("connect_block\n");
+	this->connect_lock = true;
+	this->connect_blockedUUID = syscallUUID;
 	// Time t = TimeUtil::makeTime(100, TimeUtil::MSEC);
 	// TimerModule::addTimer(&syscallUUID, t);
 }
 
-void TCPAssignment::unblock(int status){
-	printf("unblock\n");
-	SystemCallInterface::returnSystemCall(this->blockedUUID, status);
-	this->lock = false;
-	this->blockedUUID = 999;
+void TCPAssignment::connect_unblock(int status){
+	printf("connect_unblock\n");
+	SystemCallInterface::returnSystemCall(this->connect_blockedUUID, status);
+	this->connect_lock = false;
+	this->connect_blockedUUID = 999;
+}
+
+void TCPAssignment::accept_block(UUID syscallUUID, int connfd){
+	printf("accept_block(%lu, %d)\n", syscallUUID, connfd);
+	this->accept_lock = true;
+	this->accept_blockedUUID = syscallUUID;
+	this->connfds.push(connfd);
+	// Time t = TimeUtil::makeTime(100, TimeUtil::MSEC);
+	// TimerModule::addTimer(&syscallUUID, t);
+}
+
+void TCPAssignment::accept_unblock(){
+	printf("accept_unblock\n");
+	if(this->connfds.empty())
+		SystemCallInterface::returnSystemCall(this->connect_blockedUUID, -1);
+	else{
+		printf("unblock success with %d\n", this->connfds.front());
+		// Time t = TimeUtil::makeTime(100, TimeUtil::MSEC);
+		// TimerModule::addTimer(sock, t);
+		SystemCallInterface::returnSystemCall(this->connect_blockedUUID, this->connfds.front());
+		this->connfds.pop();
+	}
+	this->accept_lock = false;
+	this->accept_blockedUUID = 888;
 }
 
 void TCPAssignment::u8from32 (uint8_t u8[4], uint32_t u32){
@@ -110,7 +142,6 @@ char* TCPAssignment::ipInt2ipCharptr(uint8_t ip_buffer[4]){
 	sprintf(ipAddress_frag, "%u", ip_buffer[3]);
 	strcat(ipAddress, ipAddress_frag);
 
-	printf("Converted ipAddress : %s strlen(ipAddress) = %d\n", ipAddress, (int)strlen(ipAddress));
 	return ipAddress;
 }
 
@@ -138,23 +169,48 @@ void TCPAssignment::ip_port2sa(struct sockaddr* sa, struct Ip_port* p){
 	sin->sin_family = AF_INET;
 }
 
+pid_sockfd* TCPAssignment::find_pid_sockfd_by_Ip_port(uint8_t dest_ip[4], unsigned short dest_port){
+	Ip_port* dest_ip_port = (struct Ip_port*)malloc(sizeof(struct Ip_port));
+	char *destIP = ipInt2ipCharptr(dest_ip);
+	unsigned short destPort = ntohs(dest_port);
+	// dest : (192.168.0.7, 3879)
+	printf("I want to find (%s, %u)\n", destIP, destPort);
+	std::map<pid_sockfd, Sock*>::iterator it;
+	for(it=sock_mapping.begin(); it!=sock_mapping.end(); ++it){
+		// if(it->second->sock_status==SC_LISTEN || it->second->sock_status==SC_SYN_RCVD){
+		printf("This is what I find (%s, %u)\n", it->second->ip_port->ipAddr,
+			it->second->ip_port->port);
+		if(( strcmp(it->second->ip_port->ipAddr, destIP) == 0 || strcmp(it->second->ip_port->ipAddr, "0.0.0.0") == 0) &&
+			it->second->ip_port->port == destPort) // If the sockfd is bound
+		{
+			printf("Success : find_pid_sockfd_by_Ip_port\n");
+			return (pid_sockfd*)&(it->first);
+		}
+		// }
+	}
+
+	return NULL;
+
+}
+
+
 int TCPAssignment::syscall_socket(UUID syscallUUID, int pid, int domain, int type__unused, int protocol){
 	// return socket(param1, param2, param3);
 	// SystemCallInterface::SystemCallInterface(domain, protocol, this->host);
 	
 	int sockfd = createFileDescriptor(pid);
-	Sock sock;
-	sock.sock_status = CLOSED;
-	sock.ip_port = NULL;
-	sock_mapping[std::make_pair(pid, sockfd)] = sock;
+	Sock *sock = (Sock *)malloc(sizeof(Sock));
+	sock->sock_status = SC_CLOSED;
+	sock->ip_port = NULL;
+	this->sock_mapping[std::make_pair(pid, sockfd)] = sock;
 	return sockfd;
 }
 	
 int TCPAssignment::syscall_close(UUID syscallUUID, int pid, int fd){
 
 	if(sock_mapping.count(std::make_pair(pid, fd))==0) return -1;
-	Sock s = sock_mapping[std::make_pair(pid, fd)];
-	Ip_port *p = s.ip_port;
+	Sock *s = sock_mapping[std::make_pair(pid, fd)];
+	Ip_port *p = s->ip_port;
 	if(p!=NULL){
 		struct sockaddr* sa = (struct sockaddr*)malloc(sizeof(struct sockaddr));
 		ip_port2sa(sa, p);
@@ -180,7 +236,7 @@ int TCPAssignment::syscall_bind(UUID syscallUUID, int pid, int sockfd, struct so
 		// printf("Socket first then bind\n");
 		return -1;
 	}
-	if(this->sock_mapping[std::make_pair(pid, sockfd)].sock_status != CLOSED){
+	if(this->sock_mapping[std::make_pair(pid, sockfd)]->sock_status != SC_CLOSED){
 		// printf("Bind already Exists in sockfd %d => %s:%d\n", 
 			// sockfd, this->sock_mapping_mapping[sockfd]->first, this->sock_mapping_mapping[sockfd]->second);
 		return -1;
@@ -200,11 +256,11 @@ int TCPAssignment::syscall_bind(UUID syscallUUID, int pid, int sockfd, struct so
 	
 	
 	if(ntohl(sin->sin_addr.s_addr) == INADDR_ANY){ // INADDR_ANY
-		std::map<pid_sockfd, Sock>::iterator it;
+		std::map<pid_sockfd, Sock*>::iterator it;
 		for(it=sock_mapping.begin(); it!=sock_mapping.end(); ++it){
-			if(it->second.sock_status == BOUND) // If the sockfd is bound
+			if(it->second->sock_status == SC_BOUND) // If the sockfd is bound
 			{
-				if( it->second.ip_port->port == port){
+				if( it->second->ip_port->port == port){
 					return -1;
 				}
 			}
@@ -217,9 +273,9 @@ int TCPAssignment::syscall_bind(UUID syscallUUID, int pid, int sockfd, struct so
 	
 	// printf("dst_p\n");
 	Ip_port *dst_p = sa2ip_port(addr);
-	Sock sock;
-	sock.sock_status = BOUND;
-	sock.ip_port = dst_p;
+	Sock *sock = (Sock *)malloc(sizeof(Sock));
+	sock->sock_status = SC_BOUND;
+	sock->ip_port = dst_p;
 	this->sock_mapping[std::make_pair(pid, sockfd)] = sock;
 
 	// printf("Bind sockfd %d => (%s, %d)\n", sockfd, dst_p->first, dst_p->second);
@@ -232,10 +288,10 @@ int TCPAssignment::syscall_bind(UUID syscallUUID, int pid, int sockfd, struct so
 	// }
 	
 	// printf("dst_p->first : %s\n", dst_p->first);
-	// this->server_client_mapping[p] = dst_p;
+	// this->client_server_mapping[p] = dst_p;
 	// this->client_server_mapping[dst_p] = p;
 	
-	// if(this->server_client_mapping.count(this->server_client_mapping[addr])!=0) return -1;
+	// if(this->client_server_mapping.count(this->client_server_mapping[addr])!=0) return -1;
 	// int res = bind(sockfd, addr, addrlen);
 	// printf("sockfd : %d res : %d errno : %d\n", sockfd, res, errno);
 
@@ -265,9 +321,9 @@ int TCPAssignment::syscall_connect(UUID syscallUUID, int pid, int sockfd, struct
 	client_ip_port_ptr->port = (unsigned short)client_implicit_port;
 
 	// Implicit bind
-	Sock client_sock;
-	client_sock.sock_status = BOUND;
-	client_sock.ip_port = client_ip_port_ptr;
+	Sock *client_sock = (Sock *)malloc(sizeof(Sock));
+	client_sock->sock_status = SC_BOUND;
+	client_sock->ip_port = client_ip_port_ptr;
 	this->sock_mapping[std::make_pair(pid, sockfd)] = client_sock;
 	// struct sockaddr* client_addr = (struct sockaddr*)malloc(sizeof(struct sockaddr));
 	// ip_port2sa(client_addr, client_ip_port_ptr);
@@ -276,12 +332,12 @@ int TCPAssignment::syscall_connect(UUID syscallUUID, int pid, int sockfd, struct
 	// Impliccit bind ends
 	
 	Ip_port* server_ip_port_ptr = sa2ip_port(server_addr);
-	if(this->server_client_mapping.count(server_ip_port_ptr)!=0){
+	if(this->client_server_mapping.count(server_ip_port_ptr)!=0){
 		printf("Connect Already Exist\n");
 		return -1;
 	}
-	this->server_client_mapping[server_ip_port_ptr] = client_ip_port_ptr;
-	this->server_client_mapping[client_ip_port_ptr] = server_ip_port_ptr;
+	this->client_server_mapping[server_ip_port_ptr] = client_ip_port_ptr;
+	this->client_server_mapping[client_ip_port_ptr] = server_ip_port_ptr;
 	printf("make mapping server <-> client\n(%s, %d) <-> (%s, %d)\n", 
 		server_ip_port_ptr->ipAddr, server_ip_port_ptr->port, 
 		client_ip_port_ptr->ipAddr, client_ip_port_ptr->port);
@@ -337,7 +393,12 @@ int TCPAssignment::syscall_connect(UUID syscallUUID, int pid, int sockfd, struct
 	// send it to correct networ interface
 	this->sendPacket("IPv4", myPacket);
 
-	block(syscallUUID);
+	
+	// SC_LISTEN => SC_SYN_SENT
+	client_sock = this->sock_mapping[std::make_pair(pid, sockfd)];
+	client_sock->sock_status = SC_SYN_SENT;
+
+	connect_block(syscallUUID);
 
 	return 0;
 
@@ -346,30 +407,78 @@ int TCPAssignment::syscall_connect(UUID syscallUUID, int pid, int sockfd, struct
 
 int TCPAssignment::syscall_listen(UUID syscallUUID, int pid, int sockfd, int backlog){
 	printf("syscall_listen(%lu, %d, %d)\n", syscallUUID, pid, sockfd);
-
+	printf("backlog : %d\n", backlog);
+	if(this->sock_mapping.count(std::make_pair(pid, sockfd))==0){
+		printf("Socket first then listen\n");
+		return -1;
+	}
+	Sock *serverSock = this->sock_mapping[std::make_pair(pid, sockfd)];
+	serverSock->sock_status = SC_LISTEN;
+	serverSock->maxBacklog = backlog;
+	serverSock->backlog = 0;
+	
 	return 0;
 }
 int TCPAssignment::syscall_accept(UUID syscallUUID, int pid, int sockfd, struct sockaddr *addr, socklen_t *addrlen){
 	printf("syscall_accept(%lu, %d, %d)\n", syscallUUID, pid, sockfd);
+	printf("size : %d\n", server_client_mapping.size());
+	if(this->sock_mapping.count(std::make_pair(pid, sockfd))==0){
+		printf("Socket first then accept\n");
+		return -1;
+	}
+	int connfd;
+	Sock *sock = this->sock_mapping[std::make_pair(pid, sockfd)];	
+	printf("sock maxBacklog : %d\n", sock->maxBacklog);
+	printf("Server : (%s, %d)\n", sock->ip_port->ipAddr, sock->ip_port->port);
+	printf("size : %d\n", server_client_mapping.count(sock->ip_port));
+	std::map<Ip_port*, std::deque<Ip_port*> >::iterator it;
+	if(sock->maxBacklog){
+		for(it=server_client_mapping.begin(); it!=server_client_mapping.end(); ++it){
+			if(	strcmp(sock->ip_port->ipAddr, "0.0.0.0")==0 || 
+				strcmp(sock->ip_port->ipAddr, it->first->ipAddr)==0 && 
+				(it->first->port==sock->ip_port->port)){
+				printf("deque size : %d\n", it->second.size());
+				if(!it->second.empty()){
+					Ip_port* client_ip_port = it->second.front();
+					it->second.pop_front();
 
+					ip_port2sa(addr, client_ip_port);
+					// ip_port2sa(addr, sock->ip_port);
+
+					connfd = createFileDescriptor(pid);
+					printf("connfd : %d\n", connfd);
+
+					Sock *newsock = (Sock *)malloc(sizeof(Sock));
+					newsock->sock_status = SC_ESTAB;
+					newsock->ip_port = sock->ip_port;
+					printf("client ip_port : (%s, %u)\n", client_ip_port->ipAddr, client_ip_port->port);
+					printf("pid_sockfd : (%d, %d)\n", pid, connfd);
+					printf("%u %u %u %u\n", htons(46759), htons(21053), htons(33500), htons(9999));
+					this->sock_mapping[std::make_pair(pid, connfd)] = newsock;
+					SystemCallInterface::returnSystemCall(syscallUUID, connfd);
+					sock->maxBacklog--;
+					return 0;
+				}		
+			}
+		}
+	}
+	accept_block(syscallUUID, connfd);	
 	return 0;
 }
 
 
 int TCPAssignment::syscall_getsockname(UUID syscallUUID, int pid, int sockfd, struct sockaddr *addr, socklen_t *addrlen){
-	// int res = getsockname(sockfd, addr, addrlen);
-	// printf("getsockname : %d sockfd : %d errno : %d\n", res, sockfd, errno);
 	printf("syscall_getsockname(%lu, %d, %d)\n", syscallUUID, pid, sockfd);
 	if(this->sock_mapping.count(std::make_pair(pid, sockfd))==0){
 		printf("Sockname does not exist!\n");
 		return -1;
 	}
-	if(this->sock_mapping[std::make_pair(pid, sockfd)].sock_status==CLOSED){
+	if(this->sock_mapping[std::make_pair(pid, sockfd)]->sock_status==SC_CLOSED){
 		printf("Socket exists but not bind\n");
 		return -1;
 	}
-	Sock sock = this->sock_mapping[std::make_pair(pid, sockfd)];
-	Ip_port *p = sock.ip_port;
+	Sock *sock = this->sock_mapping[std::make_pair(pid, sockfd)];
+	Ip_port *p = sock->ip_port;
 	// printf("p->first : %s p->second : %d\n", 
 	// this->sock_mapping_mapping[sockfd]->first, this->sock_mapping_mapping[sockfd]->second);
 	ip_port2sa(addr, p);
@@ -384,16 +493,16 @@ int TCPAssignment::syscall_getpeername(UUID syscallUUID, int pid, int sockfd, st
 		printf("Not bound sockfd %d\n", sockfd);
 		return -1;
 	}
-	Sock caller_sock = this->sock_mapping[std::make_pair(pid, sockfd)];
-	Ip_port* caller_ip_port = caller_sock.ip_port;
+	Sock *caller_sock = this->sock_mapping[std::make_pair(pid, sockfd)];
+	Ip_port* caller_ip_port = caller_sock->ip_port;
 	// printf("server (%s, %d)\n", server_ip_port->first, server_ip_port->second);
 	// printf("server from scratch (%s, %d)\n", this->sock_mapping_mapping[sockfd]->first, 
 	// 	this->sock_mapping_mapping[sockfd]->second);
-	if(this->server_client_mapping.count(caller_ip_port)==0){
+	if(this->client_server_mapping.count(caller_ip_port)==0){
 		printf("No peer with (%s, %d)\n", caller_ip_port->ipAddr, caller_ip_port->port);
 		return -1;
 	}
-	Ip_port* peer_ip_port = this->server_client_mapping[caller_ip_port];
+	Ip_port* peer_ip_port = this->client_server_mapping[caller_ip_port];
 	ip_port2sa(addr, peer_ip_port);
 	return 0;
 }
@@ -435,9 +544,11 @@ void TCPAssignment::systemCallback(UUID syscallUUID, int pid, const SystemCallPa
 		SystemCallInterface::returnSystemCall(syscallUUID, this->listen_status);	
 		break;
 	case ACCEPT:
-		//this->syscall_accept(syscallUUID, pid, param.param1_int,
-		//		static_cast<struct sockaddr*>(param.param2_ptr),
-		//		static_cast<socklen_t*>(param.param3_ptr));
+		this->accept_status = this->syscall_accept(syscallUUID, pid, param.param1_int,
+				static_cast<struct sockaddr*>(param.param2_ptr),
+				static_cast<socklen_t*>(param.param3_ptr));
+		if(this->accept_status==-1)
+			SystemCallInterface::returnSystemCall(syscallUUID, this->connect_status);
 		break;
 	case BIND:
 		this->bind_status = this->syscall_bind(syscallUUID, pid, param.param1_int,
@@ -478,41 +589,96 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 	uint32_t seqNum;
 	uint8_t *tcp_seg = (uint8_t*)malloc(sizeof(uint8_t)*20);
 	int Flags;
-	
+
+	packet->readData(14+12, src_ip, 4);
+	packet->readData(14+16, dest_ip, 4);
+	packet->readData(14+20, &src_port, 2);
+	packet->readData(14+22, &dest_port, 2);
 	packet->readData(14+33, &Flags, 1);
 	// printf("SYN : %d\n", Flags & 1);
 	// printf("ACK : %d\n", !!(Flags & (1<<4)));
 	int SYN = !!(Flags & (1<<1));
 	int ACK = !!(Flags & (1<<4));
 	int FIN = !!(Flags & 1);
-	if(FIN) {
-		printf("FIN\n");
-		return;
-	}
-	else if(!SYN && ACK){
-		printf("ACK\n");
-		return;
+
+	char *destIP;
+	unsigned short destPort;
+	pid_sockfd *server_pid_sockfd = (pid_sockfd *)malloc(sizeof(pid_sockfd));
+	printf("***(%s, %u) --> (%s, %u)***\n", ipInt2ipCharptr(src_ip), ntohs(src_port),
+		ipInt2ipCharptr(dest_ip), ntohs(dest_port));
+	if(SYN && !ACK){
+		printf("SYN\n");
+		// LISTEN하고 있는 애를 찾아서
+		// 이녀석의 backlog를 올려주나?
+		// backlog값을 넘지 않는다면?
+		// pid_sockfd 찾아서 LISTEN => SC_SYN_RCVD
+		server_pid_sockfd = find_pid_sockfd_by_Ip_port(dest_ip, dest_port);
+		if(server_pid_sockfd==NULL){
+			printf("NULL : find_pid_sockfd_by_Ip_port(%s, %u)\n",
+				ipInt2ipCharptr(dest_ip), dest_port);
+		}
+		else{
+			this->sock_mapping[*server_pid_sockfd]->backlog++;
+			printf("backlog : %d maxBacklog : %d\n", this->sock_mapping[*server_pid_sockfd]->backlog, 
+						this->sock_mapping[*server_pid_sockfd]->maxBacklog);
+			if(this->sock_mapping[*server_pid_sockfd]->backlog > 
+				this->sock_mapping[*server_pid_sockfd]->maxBacklog){
+				this->sock_mapping[*server_pid_sockfd]->backlog--;
+				return;
+			}
+			else{
+				Sock *sock = this->sock_mapping[*server_pid_sockfd];
+				sock->sock_status = SC_SYN_RCVD;
+			}
+		}
 	}
 	else if(SYN && ACK){
-		// packet->readData(14+12, src_ip, 4);
-		// packet->readData(14+16, dest_ip, 4);
-		// packet->readData(14+20, &src_port, 2);
-		// packet->readData(14+22, &dest_port, 2);
+		printf("SYNACK\n");
+		// pid_sockfd 찾아서 SC_SYN_SENT => SC_ESTAB
+		server_pid_sockfd = find_pid_sockfd_by_Ip_port(dest_ip, dest_port);
+		if(server_pid_sockfd==NULL){
+			printf("NULL : find_pid_sockfd_by_Ip_port(%s, %u)\n",
+				ipInt2ipCharptr(dest_ip), dest_port);
+		}
+		else{
+			Sock *sock = this->sock_mapping[*server_pid_sockfd];
+			sock->sock_status = SC_ESTAB;
+			connect_unblock(0);	
+		}
 		
-		// printf("src (%s, %u) <-> dest (%s, %u)\n", ipInt2ipCharptr(src_ip), ntohs(src_port), 
-		// 	ipInt2ipCharptr(dest_ip), ntohs(dest_port));
-		unblock(0);
+		// if(this->connect_lock) accept_unblock();
 	}
+
+	else if(!SYN && ACK){
+		printf("ACK\n");
+		Ip_port* client_ip_port = (Ip_port*)malloc(sizeof(Ip_port));
+		Ip_port* server_ip_port = (Ip_port*)malloc(sizeof(Ip_port));
+		client_ip_port->ipAddr = ipInt2ipCharptr(src_ip);
+		client_ip_port->port = ntohs(src_port);
+		server_ip_port->ipAddr = ipInt2ipCharptr(dest_ip);
+		server_ip_port->port = ntohs(dest_port);
+		this->server_client_mapping[server_ip_port].push_back(client_ip_port);
+		return;
+	}
+	else if(FIN) {
+		printf("FIN\n");
+		// Below is how accept_unblock() works;
+		// printf("************%d***************\n", client_server_mapping.count(sock->ip_port));
+
+		// printf("I want to find (%s, %u)\n", sock->ip_port->ipAddr, sock->ip_port->port);
+		// std::map<Ip_port*, Ip_port*>::iterator it;
+		// for(it=client_server_mapping.begin(); it!=client_server_mapping.end(); ++it){
+		// 	printf("This is what I find (%s, %u)\n", it->second->ipAddr,
+		// 		it->second->port);
+		// }
+		return;
+	}
+
 	printf("After checking\n");
 	// Case SYN & SYNACK
 
-	packet->readData(14+12, src_ip, 4);
-	packet->readData(14+16, dest_ip, 4);
-	packet->readData(14+20, &src_port, 2);
-	packet->readData(14+22, &dest_port, 2);
+	
 	packet->readData(14+24, &seqNum, 4);
-
-
 	packet->readData(14+20, tcp_seg, 20);
 	uint32_t src_ip32 = u32from8(src_ip);
 	uint32_t dest_ip32 = u32from8(dest_ip);
@@ -543,11 +709,9 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 	myPacket->writeData(14+28, &seqNum, 4);
 	// if( Flags & 1) Flags = Flags | ACK;
 	if(SYN && !ACK) {
-		printf("SYN\n");
 		Flags = Flags | (1<<4);
 	}
 	else if(SYN && ACK) {
-		printf("SYNACK\n");
 		Flags = (1<<4);
 	}
 	// printf("write Flags : %d\n", Flags);
@@ -580,7 +744,11 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 
 void TCPAssignment::timerCallback(void* payload)
 {
-
+	printf("timerCallback\n");
+	// SystemCallInterface::returnSystemCall(this->connect_blockedUUID, this->connfds.front());
+	// this->connfds.pop();
+	// this->accept_lock = false;
+	// this->accept_blockedUUID = 888;
 }
 
 
