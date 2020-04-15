@@ -117,7 +117,7 @@ public:
 	Host *host;
 	std::map<pid_sockfd, Sock*> sock_mapping;
 	std::map<Ip_port*, Ip_port*> client_server_mapping; 
-	std::map<Ip_port*, std::deque<Ip_port*> > server_client_mapping;
+	std::deque<std::pair<bool, Ip_port*> > clients;
 	std::vector<unsigned short> INADDR_ANY_PORTS;
 
 	
