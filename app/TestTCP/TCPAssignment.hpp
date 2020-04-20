@@ -83,6 +83,8 @@ public:
 	virtual void u8from32 (uint8_t u8[4], uint32_t u32);
 	virtual uint32_t u32from8 (uint8_t u8[4]);
 	virtual pid_sockfd* find_pid_sockfd_by_Ip_port(uint8_t dest_ip[4], unsigned short dest_port);
+	virtual void find_client_ip_port(UUID syscallUUID, struct sockaddr* addr, int pid, int connfd, Sock *sock);
+
 
 	virtual int syscall_socket(UUID syscallUUID, int pid, int domain, int type__unused, int protocol);
 	virtual int syscall_close(UUID syscallUUID, int pid, int fd);
@@ -95,8 +97,8 @@ public:
 
 	virtual void connect_block(UUID syscallUUID);
 	virtual void connect_unblock(int status);
-	virtual void accept_block(UUID syscallUUID, int connfd);
-	virtual void accept_unblock();
+	virtual void accept_block(UUID syscallUUID, int connfd, struct sockaddr* sa);
+	virtual void accept_unblock(uint8_t dest_ip[4], unsigned short dest_port);
 
 	// virtual void TimerCallback(void* payload);
 	virtual ~TCPAssignment();
@@ -114,6 +116,7 @@ public:
 	bool accept_lock;
 	UUID connect_blockedUUID;
 	UUID accept_blockedUUID;
+	struct sockaddr* accept_blockedSA;
 	Host *host;
 	std::map<pid_sockfd, Sock*> sock_mapping;
 	std::map<Ip_port*, Ip_port*> client_server_mapping; 

@@ -49,6 +49,7 @@ TCPAssignment::TCPAssignment(Host* host) : HostModule("TCP", host),
 	this->accept_lock = false;
 	this->connect_blockedUUID = 999;
 	this->accept_blockedUUID = 888;
+	this->accept_blockedSA = NULL;
 	this->seqNum = 22;
 }
 
@@ -89,20 +90,36 @@ void TCPAssignment::connect_unblock(int status){
 	this->connect_blockedUUID = 999;
 }
 
-void TCPAssignment::accept_block(UUID syscallUUID, int connfd){
-	// printf("accept_block(%lu, %d)\n", syscallUUID, connfd);
+void TCPAssignment::accept_block(UUID syscallUUID, int connfd, struct sockaddr* sa){
+	printf("accept_block(%lu, %d)\n", syscallUUID, connfd);
 	this->accept_lock = true;
 	this->accept_blockedUUID = syscallUUID;
 	this->connfds.push(connfd);
+	this->accept_blockedSA = sa;
 	// Time t = TimeUtil::makeTime(100, TimeUtil::MSEC);
 	// TimerModule::addTimer(&syscallUUID, t);
 }
 
-void TCPAssignment::accept_unblock(){
-	// printf("accept_unblock\n");
+void TCPAssignment::accept_unblock(uint8_t dest_ip[4], unsigned short dest_port){
+	printf("accept_unblock\n");
 	if(this->connfds.empty())
 		SystemCallInterface::returnSystemCall(this->connect_blockedUUID, -1);
 	else{
+		pid_sockfd* Pid_sockfd = find_pid_sockfd_by_Ip_port(dest_ip, dest_port);
+		if(Pid_sockfd==NULL){
+			printf("Pid_sockfd==NULL\n");
+			SystemCallInterface::returnSystemCall(this->connect_blockedUUID, -1);
+		}
+		else if(this->sock_mapping.count(*Pid_sockfd)==0){
+			printf("this->sock_mapping.count(*Pid_sockfd)==0\n");
+			SystemCallInterface::returnSystemCall(this->connect_blockedUUID, -1);
+		}
+		else{
+			find_client_ip_port(this->accept_blockedUUID, this->accept_blockedSA, Pid_sockfd->first, 
+				this->connfds.front(), this->sock_mapping[*Pid_sockfd]);
+
+		}
+		
 		// printf("unblock success with %d\n", this->connfds.front());
 		// Time t = TimeUtil::makeTime(100, TimeUtil::MSEC);
 		// TimerModule::addTimer(sock, t);
@@ -111,6 +128,7 @@ void TCPAssignment::accept_unblock(){
 	}
 	this->accept_lock = false;
 	this->accept_blockedUUID = 888;
+	this->accept_blockedSA = NULL;
 }
 
 void TCPAssignment::u8from32 (uint8_t u8[4], uint32_t u32){
@@ -415,48 +433,87 @@ int TCPAssignment::syscall_listen(UUID syscallUUID, int pid, int sockfd, int bac
 	
 	return 0;
 }
+
+void TCPAssignment::find_client_ip_port(UUID syscallUUID, struct sockaddr* addr, int pid, int connfd, Sock *sock){
+	std::deque<std::pair<bool, Ip_port*> >::iterator it;
+	for(it=this->clients.begin(); it!=this->clients.end(); ++it){
+		if(	strcmp(sock->ip_port->ipAddr, "0.0.0.0")==0 || 
+			strcmp(sock->ip_port->ipAddr, it->second->ipAddr)==0 && 
+			(it->second->port==sock->ip_port->port)){
+			std::pair<bool, Ip_port*> p = this->clients.front();
+			bool isSYN = p.first;
+			Ip_port* client_ip_port = p.second;
+			this->clients.pop_front();
+
+			ip_port2sa(addr, client_ip_port);
+			// ip_port2sa(addr, sock->ip_port);
+
+			
+
+			Sock *newsock = (Sock *)malloc(sizeof(Sock));
+			newsock->sock_status = SC_ESTAB;
+			newsock->ip_port = sock->ip_port;
+			// printf("client ip_port : (%s, %u)\n", client_ip_port->ipAddr, client_ip_port->port);
+			// printf("pid_sockfd : (%d, %d)\n", pid, connfd);
+			// printf("%u %u %u %u\n", htons(46759), htons(21053), htons(33500), htons(9999));
+			this->sock_mapping[std::make_pair(pid, connfd)] = newsock;
+			if(it->first) sock->backlog--;
+			SystemCallInterface::returnSystemCall(syscallUUID, connfd);
+			break;
+		}		
+	}
+
+	return;
+}
 int TCPAssignment::syscall_accept(UUID syscallUUID, int pid, int sockfd, struct sockaddr *addr, socklen_t *addrlen){
-	// printf("syscall_accept(%lu, %d, %d)\n", syscallUUID, pid, sockfd);
+	printf("syscall_accept(%lu, %d, %d)\n", syscallUUID, pid, sockfd);
 	if(this->sock_mapping.count(std::make_pair(pid, sockfd))==0){
-		// printf("Socket first then accept\n");
+		printf("Socket first then accept\n");
 		return -1;
 	}
-	int connfd;
 	Sock *sock = this->sock_mapping[std::make_pair(pid, sockfd)];	
-	std::deque<std::pair<bool, Ip_port*> >::iterator it;
+	// std::deque<std::pair<bool, Ip_port*> >::iterator it;
 	if(sock->backlog <= sock->maxBacklog){
+		int connfd;
+		connfd = createFileDescriptor(pid);
+		printf("connfd : %d\n", connfd);
 		if(!this->clients.empty()){
-		for(it=this->clients.begin(); it!=this->clients.end(); ++it){
-			if(	strcmp(sock->ip_port->ipAddr, "0.0.0.0")==0 || 
-				strcmp(sock->ip_port->ipAddr, it->second->ipAddr)==0 && 
-				(it->second->port==sock->ip_port->port)){
-					std::pair<bool, Ip_port*> p = this->clients.front();
-					bool isSYN = p.first;
-					Ip_port* client_ip_port = p.second;
-					this->clients.pop_front();
+			find_client_ip_port(syscallUUID, addr, pid, connfd, sock);
+			// for(it=this->clients.begin(); it!=this->clients.end(); ++it){
+			// 	if(	strcmp(sock->ip_port->ipAddr, "0.0.0.0")==0 || 
+			// 		strcmp(sock->ip_port->ipAddr, it->second->ipAddr)==0 && 
+			// 		(it->second->port==sock->ip_port->port)){
+			// 		std::pair<bool, Ip_port*> p = this->clients.front();
+			// 		bool isSYN = p.first;
+			// 		Ip_port* client_ip_port = p.second;
+			// 		this->clients.pop_front();
 
-					ip_port2sa(addr, client_ip_port);
-					// ip_port2sa(addr, sock->ip_port);
+			// 		ip_port2sa(addr, client_ip_port);
+			// 		// ip_port2sa(addr, sock->ip_port);
 
-					connfd = createFileDescriptor(pid);
-					// printf("connfd : %d\n", connfd);
+					
 
-					Sock *newsock = (Sock *)malloc(sizeof(Sock));
-					newsock->sock_status = SC_ESTAB;
-					newsock->ip_port = sock->ip_port;
-					// printf("client ip_port : (%s, %u)\n", client_ip_port->ipAddr, client_ip_port->port);
-					// printf("pid_sockfd : (%d, %d)\n", pid, connfd);
-					// printf("%u %u %u %u\n", htons(46759), htons(21053), htons(33500), htons(9999));
-					this->sock_mapping[std::make_pair(pid, connfd)] = newsock;
-					if(it->first) sock->backlog--;
-					SystemCallInterface::returnSystemCall(syscallUUID, connfd);
-					return 0;
-				}		
-			}
+			// 		Sock *newsock = (Sock *)malloc(sizeof(Sock));
+			// 		newsock->sock_status = SC_ESTAB;
+			// 		newsock->ip_port = sock->ip_port;
+			// 		// printf("client ip_port : (%s, %u)\n", client_ip_port->ipAddr, client_ip_port->port);
+			// 		// printf("pid_sockfd : (%d, %d)\n", pid, connfd);
+			// 		// printf("%u %u %u %u\n", htons(46759), htons(21053), htons(33500), htons(9999));
+			// 		this->sock_mapping[std::make_pair(pid, connfd)] = newsock;
+			// 		if(it->first) sock->backlog--;
+			// 		SystemCallInterface::returnSystemCall(syscallUUID, connfd);
+			// 		return 0;
+			// 	}		
+			// }
+		}
+		else{
+			accept_block(syscallUUID, connfd, addr);	
 		}
 	
+		
+
 	}
-	// accept_block(syscallUUID, connfd);	
+	
 	return 0;
 }
 
@@ -607,7 +664,7 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 	// printf("***(%s, %u) --> (%s, %u)***\n", ipInt2ipCharptr(src_ip), ntohs(src_port),
 	// 	ipInt2ipCharptr(dest_ip), ntohs(dest_port));
 	if(SYN && !ACK){
-		// printf("SYN\n");
+		printf("SYN\n");
 		// LISTEN하고 있는 애를 찾아서
 		// 이녀석의 backlog를 올려주나?
 		// backlog값을 넘지 않는다면?
@@ -646,7 +703,7 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 		}
 	}
 	else if(SYN && ACK){
-		// printf("SYNACK\n");
+		printf("SYNACK\n");
 		// pid_sockfd 찾아서 SC_SYN_SENT => SC_ESTAB
 		server_pid_sockfd = find_pid_sockfd_by_Ip_port(dest_ip, dest_port);
 		if(server_pid_sockfd==NULL){
@@ -663,7 +720,7 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 	}
 
 	else if(!SYN && ACK){
-		// printf("ACK\n");	
+		printf("ACK\n");	
 		server_pid_sockfd = find_pid_sockfd_by_Ip_port(dest_ip, dest_port);	
 		bool f = true;
 		bool isSYN = false;
@@ -691,11 +748,11 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 			}
 			else if(!f && isSYN){
 				this->sock_mapping[*server_pid_sockfd]->backlog--;
-			}
-			
-			// for(int i=0;i<dq.size();i++)
-			return;
+			}			
 		}
+
+		if(this->accept_lock) accept_unblock(dest_ip, dest_port);
+		return;
 		
 	}
 	else if(FIN) {
