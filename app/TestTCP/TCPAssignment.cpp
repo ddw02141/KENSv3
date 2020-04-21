@@ -166,9 +166,22 @@ void TCPAssignment::send_answer_packet(Packet* packet, uint8_t src_ip[4], unsign
 	myPacket->writeData(14+20, &dest_port, 2);
 	myPacket->writeData(14+22, &src_port, 2);
 
+	if(SYN && !ACK) {
+		// SYN -> SYNACK
+		Flags = flagReceived | (1<<4);
+	}
+	else if(SYN && ACK) {
+		// SYNACK -> ACK
+		Flags = (1<<4);
+	}
+	else if(FIN){
+		// FIN -> ACK;
+		Flags = (1<<4);
+	}
+
 	seqNum = htonl(this->seqNum);
 	myPacket->writeData(14+24, &seqNum , 4);
-	if(!(SYN && ACK)) this->seqNum++;
+	if(!(Flags== (1<<4))) this->seqNum++;
 
 
 	// printf("seqNum : %u\n", seqNum);
@@ -185,18 +198,7 @@ void TCPAssignment::send_answer_packet(Packet* packet, uint8_t src_ip[4], unsign
 	}
 	
 	// if( Flags & 1) Flags = Flags | ACK;
-	if(SYN && !ACK) {
-		// SYN -> SYNACK
-		Flags = flagReceived | (1<<4);
-	}
-	else if(SYN && ACK) {
-		// SYNACK -> ACK
-		Flags = (1<<4);
-	}
-	else if(FIN){
-		// FIN -> ACK;
-		Flags = (1<<4);
-	}
+	
 	// printf("write Flags : %d\n", Flags);
 	myPacket->writeData(14+33, &Flags, 1);
 	uint16_t myPacket_checksum = 0;
@@ -224,8 +226,6 @@ void TCPAssignment::connect_block(UUID syscallUUID){
 	// printf("connect_block\n");
 	this->connect_lock = true;
 	this->connect_blockedUUID = syscallUUID;
-	// Time t = TimeUtil::makeTime(100, TimeUtil::MSEC);
-	// TimerModule::addTimer(&syscallUUID, t);
 }
 
 void TCPAssignment::connect_unblock(int status){
@@ -241,8 +241,6 @@ void TCPAssignment::accept_block(UUID syscallUUID, int connfd, struct sockaddr* 
 	this->accept_blockedUUIDs.push_back(syscallUUID);
 	this->connfds.push_back(connfd);
 	this->accept_blockedSAs.push_back(sa);
-	// Time t = TimeUtil::makeTime(100, TimeUtil::MSEC);
-	// TimerModule::addTimer(&syscallUUID, t);
 }
 
 bool TCPAssignment::lazy_accept(UUID syscallUUID, struct sockaddr* addr, int pid, int connfd, Ip_port* server_ip_port, Ip_port* client_ip_port, bool isLazy){
@@ -460,14 +458,38 @@ int TCPAssignment::syscall_socket(UUID syscallUUID, int pid, int domain, int typ
 	this->sock_mapping[std::make_pair(pid, sockfd)] = sock;
 	return sockfd;
 }
-	
+void TCPAssignment::close_socket(Ip_port* caller_ip_port){
+	uint8_t caller_ip[4];
+	ipCharptr2ipInt(caller_ip_port->ipAddr, caller_ip);
+	pid_sockfd* Pid_sockfd = find_pid_sockfd_by_Ip_port(caller_ip, caller_ip_port->port);
+	if(Pid_sockfd==NULL) printf("Pid_sockfd==NULL\n");
+	// INADDR rule fix if needed
+	if(caller_ip_port!=NULL){
+		unsigned short port = caller_ip_port->port;
+		if(strcmp(caller_ip_port->ipAddr, "0.0.0.0")==0){
+			if(!this->INADDR_ANY_PORTS.empty()){
+				auto it = find(this->INADDR_ANY_PORTS.begin(), this->INADDR_ANY_PORTS.end(), port);
+				if(it != this->INADDR_ANY_PORTS.end()){
+					this->INADDR_ANY_PORTS.erase(it);
+				}
+			}
+		}
+	}
+	this->sock_mapping.erase(std::make_pair(Pid_sockfd->first, Pid_sockfd->second));
+	removeFileDescriptor(Pid_sockfd->first, Pid_sockfd->second);
+	shutdown(Pid_sockfd->second, 2);
+}
 int TCPAssignment::syscall_close(UUID syscallUUID, int pid, int fd){
-	printf("syscall_close(%lu, pid : %d, sockfd : %d)\n", syscallUUID, pid, fd);
+	// printf("syscall_close(%lu, pid : %d, sockfd : %d)\n", syscallUUID, pid, fd);
 	if(sock_mapping.count(std::make_pair(pid, fd))==0) return -1;
 	Sock *s = sock_mapping[std::make_pair(pid, fd)];
 	Ip_port *caller_ip_port = s->ip_port;
+	if(caller_ip_port==NULL){
+		removeFileDescriptor(pid, fd);
+		shutdown(fd, 2);
+	}
 	
-	if(s->sock_status==SC_ESTAB_CLIENT){
+	else if(s->sock_status==SC_ESTAB_CLIENT){
 		printf("SC_ESTAB_CLIENT\n");
 		Ip_port *client_ip_port = caller_ip_port;
 		Ip_port* server_ip_port = this->client_server_mapping[caller_ip_port];
@@ -484,23 +506,31 @@ int TCPAssignment::syscall_close(UUID syscallUUID, int pid, int fd){
 
 	}
 	else if(s->sock_status==SC_ESTAB_SERVER){
-		printf("SC_ESTAB_SERVER\n");
-		Ip_port *server_ip_port = caller_ip_port;
-		Ip_port* client_ip_port = this->client_server_mapping[caller_ip_port];
-		uint8_t client_ip[4];
-		uint8_t server_ip[4];
-		ipCharptr2ipInt(client_ip_port->ipAddr, client_ip);
-		ipCharptr2ipInt(server_ip_port->ipAddr, server_ip);
-		unsigned short client_port = client_ip_port->port;
-		unsigned short server_port = server_ip_port->port;
-		int Flags = 1; //FIN	
-		Flags = Flags | (1<<4); //FINACK
-		send_new_packet(server_ip, server_port, client_ip, client_port, Flags);
-		s->sock_status = SC_CLOSE_WAIT;
+		;
+		// printf("SC_ESTAB_SERVER\n");
+		// printf("(%s:%u)\n", caller_ip_port->ipAddr, caller_ip_port->port);
+		// close_socket(caller_ip_port);
+
+		// printf("(%s, %u)\n", caller_ip_port->ipAddr, caller_ip_port->port);
+		// // (0.0.0.0, 9999)
+		// Ip_port *server_ip_port = caller_ip_port;
+		// Ip_port* client_ip_port = this->client_server_mapping[caller_ip_port];
+		// uint8_t client_ip[4];
+		// uint8_t server_ip[4];
+		// ipCharptr2ipInt(client_ip_port->ipAddr, client_ip);
+		// ipCharptr2ipInt(server_ip_port->ipAddr, server_ip);
+		// unsigned short client_port = client_ip_port->port;
+		// unsigned short server_port = server_ip_port->port;
+		// int Flags = 1; //FIN	
+		// Flags = Flags | (1<<4); //FINACK
+		// send_new_packet(server_ip, server_port, client_ip, client_port, Flags);
+		// s->sock_status = SC_CLOSE_WAIT;
 
 	}
 	else{
-		// printf("Neither SC_ESTAB CLIENT or SERVER : %d\n", s->sock_status);
+		printf("else\n");
+		printf("(%s:%u)\n", caller_ip_port->ipAddr, caller_ip_port->port);
+		close_socket(caller_ip_port);// printf("Neither SC_ESTAB CLIENT or SERVER : %d\n", s->sock_status);
 	}
 
 	// // INADDR rule fix if needed
@@ -854,7 +884,6 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 	int SYN = !!(flagReceived & (1<<1));
 	int ACK = !!(flagReceived & (1<<4));
 	int FIN = !!(flagReceived & 1);
-	printf("FIN : %d\n", FIN);
 
 	src_port = ntohs(src_port);
 	dest_port = ntohs(dest_port);
@@ -936,6 +965,9 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 		if(sock->sock_status==SC_FIN_WAIT2){
 			// client side
 			printf("SC_FIN_WAIT2\n");
+			sock->sock_status=SC_TIME_WAIT;
+			// Time t = TimeUtil::makeTime(120, TimeUtil::SEC);
+			// TimerModule::addTimer(packet, t);
 		}
 		else if(sock->sock_status==SC_ESTAB_SERVER){
 			// server side
@@ -946,7 +978,7 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 		
 	}
 
-	else if(!SYN && ACK){
+	else if(ACK){
 		printf("ACK\n");	
 		server_pid_sockfd = find_pid_sockfd_by_Ip_port(dest_ip, dest_port);
 		if(server_pid_sockfd==NULL) return;	
@@ -1000,6 +1032,10 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 
 	// given packet is my responsibility
 	this->freePacket(packet);
+	if(FIN) {
+		Time t = TimeUtil::makeTime(120, TimeUtil::SEC);
+		TimerModule::addTimer(server_ip_port, t);
+	}
 
 	return;
 
@@ -1008,6 +1044,37 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 void TCPAssignment::timerCallback(void* payload)
 {
 	printf("timerCallback\n");
+	// Packet* packet = (Packet*)payload;
+	// printf("A\n");
+	// uint8_t src_ip[4];
+	// uint8_t dest_ip[4];
+	// unsigned short src_port;
+	// unsigned short dest_port;
+	// int flagReceived;
+	// printf("B\n");
+	// packet->readData(14+12, src_ip, 4);
+	// printf("B1\n");
+	// packet->readData(14+16, dest_ip, 4);
+	// printf("B2\n");
+	// packet->readData(14+20, &src_port, 2);
+	// printf("B3\n");
+	// packet->readData(14+22, &dest_port, 2);
+	// printf("B4\n");
+	// packet->readData(14+33, &flagReceived, 1);
+	// printf("B5\n");
+	// src_port = ntohs(src_port);
+	// dest_port = ntohs(dest_port);
+	// printf("D\n");
+	// Ip_port* client_ip_port = (Ip_port*)malloc(sizeof(Ip_port));
+	// Ip_port* server_ip_port = (Ip_port*)malloc(sizeof(Ip_port));
+	// client_ip_port->ipAddr = ipInt2ipCharptr(dest_ip);
+	// client_ip_port->port = dest_port;
+	// server_ip_port->ipAddr = ipInt2ipCharptr(src_ip);
+	// server_ip_port->port = src_port;
+	// printf("E\n");
+	Ip_port* client_ip_port = (Ip_port*)payload;
+	if(client_ip_port!=NULL) close_socket(client_ip_port);
+
 	// SystemCallInterface::returnSystemCall(this->connect_blockedUUID, this->connfds.front());
 	// this->connfds.pop();
 	// this->accept_lock = false;

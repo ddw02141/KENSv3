@@ -91,7 +91,7 @@ public:
 	virtual uint32_t u32from8 (uint8_t u8[4]);
 	virtual pid_sockfd* find_pid_sockfd_by_Ip_port(uint8_t dest_ip[4], unsigned short dest_port);
 	virtual bool lazy_accept(UUID syscallUUID, struct sockaddr* addr, int pid, int connfd, Ip_port* server_ip_port, Ip_port* client_ip_port, bool isLazy);
-
+	virtual void close_socket(Ip_port* ip_port);
 
 	virtual int syscall_socket(UUID syscallUUID, int pid, int domain, int type__unused, int protocol);
 	virtual int syscall_close(UUID syscallUUID, int pid, int fd);
