@@ -46,10 +46,10 @@ TCPAssignment::TCPAssignment(Host* host) : HostModule("TCP", host),
 	this->clients = std::deque<std::pair<bool, Ip_port*> >();
 	this->INADDR_ANY_PORTS = std::vector<unsigned short>();
 	this->connect_lock = false;
-	this->accept_lock = false;
+	this->accept_lock = 0;
 	this->connect_blockedUUID = 999;
-	this->accept_blockedUUID = 888;
-	this->accept_blockedSA = NULL;
+	this->accept_blockedUUIDs = std::deque<UUID>();
+	this->accept_blockedSAs = std::deque<struct sockaddr*>();
 	this->seqNum = 22;
 }
 
@@ -57,12 +57,13 @@ TCPAssignment::~TCPAssignment()
 {
 	this->sock_mapping.clear();
 	this->client_server_mapping.clear();
-	// Map iterating 하면서 clear 해야함
 	auto it = this->clients.begin();
 	this->clients.clear();
 	this->INADDR_ANY_PORTS.clear();
 	std::queue<int> empty;
 	std::swap(this->connfds, empty);
+	this->accept_blockedUUIDs.clear();
+	this->accept_blockedSAs.clear();
 }
 
 void TCPAssignment::initialize()
@@ -92,15 +93,15 @@ void TCPAssignment::connect_unblock(int status){
 
 void TCPAssignment::accept_block(UUID syscallUUID, int connfd, struct sockaddr* sa){
 	printf("accept_block(%lu, %d)\n", syscallUUID, connfd);
-	this->accept_lock = true;
-	this->accept_blockedUUID = syscallUUID;
+	this->accept_lock++;
+	this->accept_blockedUUIDs.push_back(syscallUUID);
 	this->connfds.push(connfd);
-	this->accept_blockedSA = sa;
+	this->accept_blockedSAs.push_back(sa);
 	// Time t = TimeUtil::makeTime(100, TimeUtil::MSEC);
 	// TimerModule::addTimer(&syscallUUID, t);
 }
 
-void TCPAssignment::accept_unblock(uint8_t dest_ip[4], unsigned short dest_port){
+void TCPAssignment::accept_unblock(uint8_t src_ip[4], unsigned short src_port, uint8_t dest_ip[4], unsigned short dest_port){
 	printf("accept_unblock on (%s:%u)\n", ipInt2ipCharptr(dest_ip), dest_port);
 	if(this->connfds.empty()){
 		printf("this->connfds.empty()\n");
@@ -121,8 +122,20 @@ void TCPAssignment::accept_unblock(uint8_t dest_ip[4], unsigned short dest_port)
 		// 	return;
 		// }
 		else{
-			find_client_ip_port(this->accept_blockedUUID, this->accept_blockedSA, Pid_sockfd->first, 
-				this->connfds.front(), this->sock_mapping[*Pid_sockfd]);
+			// lazy_accept(this->accept_blockedUUIDs.front(), this->accept_blockedSAs.front(), Pid_sockfd->first, 
+			// 	this->connfds.front(), this->sock_mapping[*Pid_sockfd]);
+			Ip_port* client_ip_port = (Ip_port*)malloc(sizeof(Ip_port));
+			client_ip_port->ipAddr = ipInt2ipCharptr(src_ip);
+			client_ip_port->port = src_port;
+			Ip_port* server_ip_port = (Ip_port*)malloc(sizeof(Ip_port));
+			server_ip_port->ipAddr = ipInt2ipCharptr(dest_ip);
+			server_ip_port->port = dest_port;
+			bool success = lazy_accept(this->accept_blockedUUIDs.front(), this->accept_blockedSAs.front(), Pid_sockfd->first, 
+				this->connfds.front(), server_ip_port, client_ip_port, true);
+			if(success) {
+				printf("accept_unblock success : %d\n", success);
+				this->sock_mapping[*Pid_sockfd]->backlog--;
+			}
 
 		}
 		
@@ -132,9 +145,9 @@ void TCPAssignment::accept_unblock(uint8_t dest_ip[4], unsigned short dest_port)
 		SystemCallInterface::returnSystemCall(this->connect_blockedUUID, this->connfds.front());
 		this->connfds.pop();
 	}
-	this->accept_lock = false;
-	this->accept_blockedUUID = 888;
-	this->accept_blockedSA = NULL;
+	this->accept_lock--;
+	this->accept_blockedUUIDs.pop_front();
+	this->accept_blockedSAs.pop_front();
 }
 
 void TCPAssignment::u8from32 (uint8_t u8[4], uint32_t u32){
@@ -200,8 +213,9 @@ pid_sockfd* TCPAssignment::find_pid_sockfd_by_Ip_port(uint8_t dest_ip[4], unsign
 	unsigned short destPort = dest_port;
 	// dest : (192.168.0.7, 3879)
 	std::map<pid_sockfd, Sock*>::iterator it;
-	for(it=sock_mapping.begin(); it!=sock_mapping.end(); ++it){
+	for(it=this->sock_mapping.begin(); it!=this->sock_mapping.end(); ++it){
 		// if(it->second->sock_status==SC_LISTEN || it->second->sock_status==SC_SYN_RCVD){
+		// printf("element : (%s:%d)\n", it->second->ip_port->ipAddr, it->second->ip_port->port);
 		if(( strcmp(it->second->ip_port->ipAddr, destIP) == 0 || strcmp(it->second->ip_port->ipAddr, "0.0.0.0") == 0) &&
 			it->second->ip_port->port == destPort) // If the sockfd is bound
 		{
@@ -226,12 +240,14 @@ int TCPAssignment::syscall_socket(UUID syscallUUID, int pid, int domain, int typ
 	Sock *sock = (Sock *)malloc(sizeof(Sock));
 	sock->sock_status = SC_CLOSED;
 	sock->ip_port = NULL;
+	sock->backlog = 0;
+	sock->maxBacklog = 0;
 	this->sock_mapping[std::make_pair(pid, sockfd)] = sock;
 	return sockfd;
 }
 	
 int TCPAssignment::syscall_close(UUID syscallUUID, int pid, int fd){
-
+	// printf("syscall_close(%lu, pid : %d, sockfd : %d)\n", syscallUUID, pid, fd);
 	if(sock_mapping.count(std::make_pair(pid, fd))==0) return -1;
 	Sock *s = sock_mapping[std::make_pair(pid, fd)];
 	Ip_port *p = s->ip_port;
@@ -256,15 +272,18 @@ int TCPAssignment::syscall_close(UUID syscallUUID, int pid, int fd){
 
 int TCPAssignment::syscall_bind(UUID syscallUUID, int pid, int sockfd, struct sockaddr *addr, socklen_t addrlen){
 	printf("syscall_bind(%lu, pid : %d, sockfd : %d)\n", syscallUUID, pid, sockfd);
+
 	if(this->sock_mapping.count(std::make_pair(pid, sockfd))==0){
 		// printf("Socket first then bind\n");
 		return -1;
 	}
+
 	if(this->sock_mapping[std::make_pair(pid, sockfd)]->sock_status != SC_CLOSED){
 		// printf("Bind already Exists in sockfd %d => %s:%d\n", 
 			// sockfd, this->sock_mapping_mapping[sockfd]->first, this->sock_mapping_mapping[sockfd]->second);
 		return -1;
 	}
+
 	struct sockaddr_in* sin;
 	sin = (struct sockaddr_in*)addr;
 	unsigned short port = ntohs(sin->sin_port);
@@ -275,6 +294,7 @@ int TCPAssignment::syscall_bind(UUID syscallUUID, int pid, int sockfd, struct so
 			return -1;
 		}
 	}
+
 
 	
 	
@@ -297,11 +317,29 @@ int TCPAssignment::syscall_bind(UUID syscallUUID, int pid, int sockfd, struct so
 	
 	// printf("dst_p\n");
 	Ip_port *dst_p = sa2ip_port(addr);
+	Ip_port *new_ip_port = (Ip_port *)malloc(sizeof(Ip_port));
+	new_ip_port->ipAddr = (char *)malloc(sizeof(16));
 	Sock *sock = (Sock *)malloc(sizeof(Sock));
+
 	sock->sock_status = SC_BOUND;
-	sock->ip_port = dst_p;
-	printf("dst_p : (%s:%u)\n", dst_p->ipAddr, dst_p->port);
+	// Fix sock_mapping values changing Issue
+	memcpy(new_ip_port->ipAddr, dst_p->ipAddr, 16);
+	// 
+	new_ip_port->port = dst_p->port;
+	sock->ip_port = new_ip_port;
+	
+	// printf("dst_p : (%s:%u)\n", dst_p->ipAddr, dst_p->port);
+
 	this->sock_mapping[std::make_pair(pid, sockfd)] = sock;
+
+	// std::map<pid_sockfd, Sock*>::iterator it;
+	// if(!this->sock_mapping.empty()){
+	// 	for(it=this->sock_mapping.begin(); it!=this->sock_mapping.end(); ++it){
+	// 		// if(it->second->sock_status==SC_LISTEN || it->second->sock_status==SC_SYN_RCVD){
+	// 		printf("After bind element : (%s:%d)\n", it->second->ip_port->ipAddr, it->second->ip_port->port);
+	// 		// }
+	// 	}
+	// }
 
 	// printf("Bind sockfd %d => (%s, %d)\n", sockfd, dst_p->first, dst_p->second);
 	// printf("Bind Check : (%s, %d)\n", this->sock_mapping_mapping[sockfd]->first,
@@ -444,39 +482,77 @@ int TCPAssignment::syscall_listen(UUID syscallUUID, int pid, int sockfd, int bac
 	return 0;
 }
 
-void TCPAssignment::find_client_ip_port(UUID syscallUUID, struct sockaddr* addr, int pid, int connfd, Sock *sock){
-	std::deque<std::pair<bool, Ip_port*> >::iterator it;
-	for(it=this->clients.begin(); it!=this->clients.end(); ++it){
-		if(	strcmp(sock->ip_port->ipAddr, "0.0.0.0")==0 || 
-			strcmp(sock->ip_port->ipAddr, it->second->ipAddr)==0 && 
-			(it->second->port==sock->ip_port->port)){
-			std::pair<bool, Ip_port*> p = this->clients.front();
-			bool isSYN = p.first;
-			Ip_port* client_ip_port = p.second;
-			this->clients.pop_front();
+bool TCPAssignment::lazy_accept(UUID syscallUUID, struct sockaddr* addr, int pid, int connfd, Ip_port* server_ip_port, Ip_port* client_ip_port, bool isLazy){
+	if(!isLazy){
 
-			ip_port2sa(addr, client_ip_port);
-			// ip_port2sa(addr, sock->ip_port);
+		// This is not lazy_accept
+		// This is from syscall_accept directly because their exist at least one client in this->clients.
+		std::pair<bool, Ip_port*> p = this->clients.front();
+		this->clients.pop_front();
+		ip_port2sa(addr, server_ip_port);
 
-			
+		Sock *newsock = (Sock *)malloc(sizeof(Sock));
+		newsock->sock_status = SC_ESTAB;
+		newsock->ip_port = server_ip_port;
+		// printf("client ip_port : (%s, %u)\n", client_ip_port->ipAddr, client_ip_port->port);
+		// printf("pid_sockfd : (%d, %d)\n", pid, connfd);
+		// printf("%u %u %u %u\n", htons(46759), htons(21053), htons(33500), htons(9999));
+		this->sock_mapping[std::make_pair(pid, connfd)] = newsock;
+		
+		// if(it->first) sock->backlog--;
+		
+		SystemCallInterface::returnSystemCall(syscallUUID, connfd);
+		printf("not lazy_accept => Success\n");
+		return true;
 
-			Sock *newsock = (Sock *)malloc(sizeof(Sock));
-			newsock->sock_status = SC_ESTAB;
-			newsock->ip_port = sock->ip_port;
-			// printf("client ip_port : (%s, %u)\n", client_ip_port->ipAddr, client_ip_port->port);
-			// printf("pid_sockfd : (%d, %d)\n", pid, connfd);
-			// printf("%u %u %u %u\n", htons(46759), htons(21053), htons(33500), htons(9999));
-			this->sock_mapping[std::make_pair(pid, connfd)] = newsock;
-			if(it->first) sock->backlog--;
-			SystemCallInterface::returnSystemCall(syscallUUID, connfd);
-			break;
-		}		
 	}
+	else{
+		// This is lazy_accept
+		// This is from accept_unblock
+		std::deque<std::pair<bool, Ip_port*> >::iterator it;
+		for(it=this->clients.begin(); it!=this->clients.end(); ++it){
+			if(	strcmp(client_ip_port->ipAddr, "0.0.0.0")==0 || 
+				strcmp(client_ip_port->ipAddr, it->second->ipAddr)==0 && 
+				(client_ip_port->port==it->second->port)){
 
-	return;
+
+
+				
+				// std::pair<bool, Ip_port*> p = this->clients.front();
+				// bool isSYN = p.first;
+				// Ip_port* matched_client_ip_port = p.second;
+				// this->clients.pop_front();
+				this->clients.erase(it);
+
+				// printf("ntohs(42934) = %u ntohs(3879) = %u\n", ntohs(42934), ntohs(3879));
+
+				ip_port2sa(addr, server_ip_port);
+				// ip_port2sa(addr, sock->ip_port);
+
+				
+
+				Sock *newsock = (Sock *)malloc(sizeof(Sock));
+				newsock->sock_status = SC_ESTAB;
+				newsock->ip_port = server_ip_port;
+				// printf("client ip_port : (%s, %u)\n", client_ip_port->ipAddr, client_ip_port->port);
+				// printf("pid_sockfd : (%d, %d)\n", pid, connfd);
+				// printf("%u %u %u %u\n", htons(46759), htons(21053), htons(33500), htons(9999));
+				this->sock_mapping[std::make_pair(pid, connfd)] = newsock;
+				
+				// if(it->first) sock->backlog--;
+				
+				SystemCallInterface::returnSystemCall(syscallUUID, connfd);
+				printf("lazy_accept => Success\n");
+				return true;
+			}		
+		}
+		return false;
+	
+	}	
 }
 int TCPAssignment::syscall_accept(UUID syscallUUID, int pid, int sockfd, struct sockaddr *addr, socklen_t *addrlen){
 	printf("syscall_accept(%lu, %d, %d)\n", syscallUUID, pid, sockfd);
+
 	if(this->sock_mapping.count(std::make_pair(pid, sockfd))==0){
 		printf("Socket first then accept\n");
 		return -1;
@@ -489,7 +565,9 @@ int TCPAssignment::syscall_accept(UUID syscallUUID, int pid, int sockfd, struct 
 		connfd = createFileDescriptor(pid);
 		printf("connfd : %d\n", connfd);
 		if(!this->clients.empty()){
-			find_client_ip_port(syscallUUID, addr, pid, connfd, sock);
+			bool success = lazy_accept(syscallUUID, addr, pid, connfd, sock->ip_port, NULL, false);
+			printf("syscall_accept success : %d\n", success);
+			if(success) sock->backlog--;
 			// for(it=this->clients.begin(); it!=this->clients.end(); ++it){
 			// 	if(	strcmp(sock->ip_port->ipAddr, "0.0.0.0")==0 || 
 			// 		strcmp(sock->ip_port->ipAddr, it->second->ipAddr)==0 && 
@@ -706,7 +784,7 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 				}
 				
 				if(f) {
-					printf("push_back clients (%s:%u)\n", client_ip_port->ipAddr, client_ip_port->port);
+					printf("push clients (%s:%u)\n", client_ip_port->ipAddr, client_ip_port->port);
 					this->clients.push_back(std::make_pair(true, client_ip_port));
 					this->sock_mapping[*server_pid_sockfd]->backlog++;
 				}
@@ -765,7 +843,7 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 			}			
 		}
 
-		if(this->accept_lock) accept_unblock(dest_ip, dest_port);
+		if(this->accept_lock) accept_unblock(src_ip, src_port, dest_ip, dest_port);
 		return;
 		
 	}
