@@ -35,7 +35,8 @@ typedef enum {
 	SC_LISTEN, 
 	SC_SYN_SENT, 
 	SC_SYN_RCVD, 
-	SC_ESTAB,
+	SC_ESTAB_CLIENT,
+	SC_ESTAB_SERVER,
 	SC_FIN_WAIT1,
 	SC_FIN_WAIT2,
 	SC_CLOSE_WAIT,
@@ -79,8 +80,11 @@ public:
 	TCPAssignment(Host* host);
 	virtual void initialize();
 	virtual void finalize();
-	virtual void send_packet(uint8_t src_ip[4], unsigned short src_port, uint8_t dest_ip[4], unsigned short dest_port, int Flags);
+	virtual void send_new_packet(uint8_t src_ip[4], unsigned short src_port, uint8_t dest_ip[4], unsigned short dest_port, int Flags);
+	virtual void send_answer_packet(Packet* packet, uint8_t src_ip[4], unsigned short src_port, uint8_t dest_ip[4], unsigned short dest_port, int flagReceived);
+
 	virtual char* ipInt2ipCharptr(uint8_t ip_buffer[4]);
+	virtual void ipCharptr2ipInt(char* ipCharptr, uint8_t ipInt[4]);
 	virtual struct Ip_port* sa2ip_port(struct sockaddr* sa);
 	virtual void ip_port2sa(struct sockaddr* sa, struct Ip_port *p);
 	virtual void u8from32 (uint8_t u8[4], uint32_t u32);
@@ -108,6 +112,7 @@ public:
 	int sockfd;
 	std::deque<int> connfds;
 	int seqNum;
+	int ackNum;
 	int close_status;
 	int bind_status;
 	int connect_status;
