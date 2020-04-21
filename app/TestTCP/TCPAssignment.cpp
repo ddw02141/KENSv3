@@ -19,6 +19,9 @@
 #include <netinet/in.h>
 #include <E/Networking/E_RoutingInfo.hpp>
 #include <assert.h>
+#include <map>
+#include <deque>
+
 
 
 namespace E
@@ -33,7 +36,7 @@ TCPAssignment::TCPAssignment(Host* host) : HostModule("TCP", host),
 	this->host = host;
 	this->sockfd = -1;
 	this->accept_status = 0;
-	this->connfds = std::queue<int>(); 
+	this->connfds = std::deque<int>(); 
 	this->close_status = 0;
 	this->bind_status = 0;
 	this->connect_status = 0;
@@ -44,7 +47,7 @@ TCPAssignment::TCPAssignment(Host* host) : HostModule("TCP", host),
 	this->sock_mapping = std::map<pid_sockfd, Sock*>();
 	this->client_server_mapping = std::map<Ip_port*, Ip_port*>();
 	this->clients = std::deque<std::pair<bool, Ip_port*> >();
-	this->INADDR_ANY_PORTS = std::vector<unsigned short>();
+	this->INADDR_ANY_PORTS = std::deque<unsigned short>();
 	this->connect_lock = false;
 	this->accept_lock = 0;
 	this->connect_blockedUUID = 999;
@@ -55,15 +58,14 @@ TCPAssignment::TCPAssignment(Host* host) : HostModule("TCP", host),
 
 TCPAssignment::~TCPAssignment()
 {
-	this->sock_mapping.clear();
-	this->client_server_mapping.clear();
-	auto it = this->clients.begin();
-	this->clients.clear();
-	this->INADDR_ANY_PORTS.clear();
-	std::queue<int> empty;
-	std::swap(this->connfds, empty);
+	this->connfds.clear();
 	this->accept_blockedUUIDs.clear();
 	this->accept_blockedSAs.clear();
+	this->sock_mapping.clear();
+	this->client_server_mapping.clear();
+	this->clients.clear();
+	this->INADDR_ANY_PORTS.clear();
+	
 }
 
 void TCPAssignment::initialize()
@@ -74,6 +76,60 @@ void TCPAssignment::initialize()
 void TCPAssignment::finalize()
 {
 
+}
+
+void TCPAssignment::send_packet(uint8_t src_ip[4], unsigned short src_port, uint8_t dest_ip[4], unsigned short dest_port, int Flags){
+	uint32_t src_ip32 = u32from8(src_ip);
+	uint32_t dest_ip32 = u32from8(dest_ip);
+	src_port = htons(src_port);
+	dest_port = htons(dest_port);
+	// unsigned short client_port; 
+	// unsigned short server_port; 
+	// client_port = client_ip_port_ptr->port;
+	// server_port = server_ip_port_ptr->port;
+	// client_port = htons(client_port);
+	// server_port = htons(server_port);
+	uint8_t *tcp_seg = (uint8_t*)malloc(sizeof(uint8_t)*20);
+	// int Flags = 1<<1; // SYN
+	Packet* myPacket = allocatePacket(54);
+	myPacket->writeData(14+12, &src_ip32, 4);
+	myPacket->writeData(14+16, &dest_ip32, 4);
+	myPacket->writeData(14+20, &src_port, 2);
+	myPacket->writeData(14+22, &dest_port, 2);
+	// seqNum = ntohl(seqNum);
+	// seqNum++;
+	// seqNum = htonl(seqNum);
+	// myPacket->writeData(14+28, &seqNum, 4);
+	// if( Flags & 1) Flags = Flags | ACK;
+	// Flags = Flags | ACK;
+	// printf("write Flags : %d\n", Flags);
+	myPacket->writeData(14+33, &Flags, 1);
+	// uint16_t headerlength16 = 5;
+	uint8_t headerlength8 = 5<<4;
+	// headerlength16 = htons(headerlength16);
+	// headerlength8 = (uint8_t)headerlength16;
+	myPacket->writeData(46, &headerlength8, 1);
+	// printf("headerlength8 : %x\n", headerlength8);
+	uint16_t myPacket_checksum = 0;
+	myPacket->writeData(50, &myPacket_checksum, 2);
+	myPacket->readData(14+20, tcp_seg, 20);
+	// uint32_t server_ip32 = server_ip[0] | (server_ip[1] << 8) | (server_ip[2] << 16) | (server_ip[3] << 24);
+
+	myPacket_checksum = NetworkUtil::tcp_sum(src_ip32, dest_ip32, tcp_seg, 20);
+	// printf("myPacket before change checksum : %x\n", myPacket_checksum);
+	myPacket_checksum = ~myPacket_checksum;
+	// printf("myPacket checksum Field : %x\n", myPacket_checksum);
+	myPacket_checksum = htons(myPacket_checksum);
+	myPacket->writeData(50, &myPacket_checksum, 2);
+
+	// Verify
+	myPacket->readData(14+20, tcp_seg, 20);
+	myPacket_checksum = NetworkUtil::tcp_sum(src_ip32, dest_ip32, tcp_seg, 20);
+	// printf("myPacket after change checksum : %x\n", myPacket_checksum);
+
+	// IP Module will fill rest of IP header, 
+	// send it to correct networ interface
+	this->sendPacket("IPv4", myPacket);
 }
 
 void TCPAssignment::connect_block(UUID syscallUUID){
@@ -95,7 +151,7 @@ void TCPAssignment::accept_block(UUID syscallUUID, int connfd, struct sockaddr* 
 	printf("accept_block(%lu, %d)\n", syscallUUID, connfd);
 	this->accept_lock++;
 	this->accept_blockedUUIDs.push_back(syscallUUID);
-	this->connfds.push(connfd);
+	this->connfds.push_back(connfd);
 	this->accept_blockedSAs.push_back(sa);
 	// Time t = TimeUtil::makeTime(100, TimeUtil::MSEC);
 	// TimerModule::addTimer(&syscallUUID, t);
@@ -143,7 +199,7 @@ void TCPAssignment::accept_unblock(uint8_t src_ip[4], unsigned short src_port, u
 		// Time t = TimeUtil::makeTime(100, TimeUtil::MSEC);
 		// TimerModule::addTimer(sock, t);
 		SystemCallInterface::returnSystemCall(this->connect_blockedUUID, this->connfds.front());
-		this->connfds.pop();
+		this->connfds.pop_front();
 	}
 	this->accept_lock--;
 	this->accept_blockedUUIDs.pop_front();
@@ -208,7 +264,7 @@ void TCPAssignment::ip_port2sa(struct sockaddr* sa, struct Ip_port* p){
 }
 
 pid_sockfd* TCPAssignment::find_pid_sockfd_by_Ip_port(uint8_t dest_ip[4], unsigned short dest_port){
-	Ip_port* dest_ip_port = (struct Ip_port*)malloc(sizeof(struct Ip_port));
+	
 	char *destIP = ipInt2ipCharptr(dest_ip);
 	unsigned short destPort = dest_port;
 	// dest : (192.168.0.7, 3879)
@@ -401,61 +457,15 @@ int TCPAssignment::syscall_connect(UUID syscallUUID, int pid, int sockfd, struct
 	}
 	this->client_server_mapping[server_ip_port_ptr] = client_ip_port_ptr;
 	this->client_server_mapping[client_ip_port_ptr] = server_ip_port_ptr;
-	// printf("make mapping server <-> client\n(%s, %d) <-> (%s, %d)\n", 
-	// 	server_ip_port_ptr->ipAddr, server_ip_port_ptr->port, 
-	// 	client_ip_port_ptr->ipAddr, client_ip_port_ptr->port);
 
-	uint32_t client_ip32 = u32from8(client_ip);
 	uint32_t server_ip32 = sin->sin_addr.s_addr;
 	u8from32(server_ip, server_ip32);
-	unsigned short client_port; 
-	unsigned short server_port; 
-	client_port = client_ip_port_ptr->port;
-	server_port = server_ip_port_ptr->port;
-	client_port = htons(client_port);
-	server_port = htons(server_port);
-	uint8_t *tcp_seg = (uint8_t*)malloc(sizeof(uint8_t)*20);
+	unsigned short client_port = client_ip_port_ptr->port;
+	unsigned short server_port = server_ip_port_ptr->port;
 	int Flags = 1<<1; // SYN
-	Packet* myPacket = allocatePacket(54);
-	myPacket->writeData(14+12, &client_ip32, 4);
-	myPacket->writeData(14+16, &server_ip32, 4);
-	myPacket->writeData(14+20, &client_port, 2);
-	myPacket->writeData(14+22, &server_port, 2);
-	// seqNum = ntohl(seqNum);
-	// seqNum++;
-	// seqNum = htonl(seqNum);
-	// myPacket->writeData(14+28, &seqNum, 4);
-	// if( Flags & 1) Flags = Flags | ACK;
-	// Flags = Flags | ACK;
-	// printf("write Flags : %d\n", Flags);
-	myPacket->writeData(14+33, &Flags, 1);
-	// uint16_t headerlength16 = 5;
-	uint8_t headerlength8 = 5<<4;
-	// headerlength16 = htons(headerlength16);
-	// headerlength8 = (uint8_t)headerlength16;
-	myPacket->writeData(46, &headerlength8, 1);
-	// printf("headerlength8 : %x\n", headerlength8);
-	uint16_t myPacket_checksum = 0;
-	myPacket->writeData(50, &myPacket_checksum, 2);
-	myPacket->readData(14+20, tcp_seg, 20);
-	// uint32_t server_ip32 = server_ip[0] | (server_ip[1] << 8) | (server_ip[2] << 16) | (server_ip[3] << 24);
+	
 
-	myPacket_checksum = NetworkUtil::tcp_sum(client_ip32, server_ip32, tcp_seg, 20);
-	// printf("myPacket before change checksum : %x\n", myPacket_checksum);
-	myPacket_checksum = ~myPacket_checksum;
-	// printf("myPacket checksum Field : %x\n", myPacket_checksum);
-	myPacket_checksum = htons(myPacket_checksum);
-	myPacket->writeData(50, &myPacket_checksum, 2);
-
-	// Verify
-	myPacket->readData(14+20, tcp_seg, 20);
-	myPacket_checksum = NetworkUtil::tcp_sum(client_ip32, server_ip32, tcp_seg, 20);
-	// printf("myPacket after change checksum : %x\n", myPacket_checksum);
-
-	// IP Module will fill rest of IP header, 
-	// send it to correct networ interface
-	this->sendPacket("IPv4", myPacket);
-
+	send_packet(client_ip, client_port, server_ip, server_port, Flags);
 	
 	// SC_LISTEN => SC_SYN_SENT
 	client_sock = this->sock_mapping[std::make_pair(pid, sockfd)];
@@ -487,7 +497,7 @@ bool TCPAssignment::lazy_accept(UUID syscallUUID, struct sockaddr* addr, int pid
 
 		// This is not lazy_accept
 		// This is from syscall_accept directly because their exist at least one client in this->clients.
-		std::pair<bool, Ip_port*> p = this->clients.front();
+		// std::pair<bool, Ip_port*> p = this->clients.front();
 		this->clients.pop_front();
 		ip_port2sa(addr, server_ip_port);
 
@@ -511,8 +521,8 @@ bool TCPAssignment::lazy_accept(UUID syscallUUID, struct sockaddr* addr, int pid
 		// This is from accept_unblock
 		std::deque<std::pair<bool, Ip_port*> >::iterator it;
 		for(it=this->clients.begin(); it!=this->clients.end(); ++it){
-			if(	strcmp(client_ip_port->ipAddr, "0.0.0.0")==0 || 
-				strcmp(client_ip_port->ipAddr, it->second->ipAddr)==0 && 
+			if(	(strcmp(client_ip_port->ipAddr, "0.0.0.0")==0 || 
+				strcmp(client_ip_port->ipAddr, it->second->ipAddr)==0) && 
 				(client_ip_port->port==it->second->port)){
 
 
@@ -568,32 +578,6 @@ int TCPAssignment::syscall_accept(UUID syscallUUID, int pid, int sockfd, struct 
 			bool success = lazy_accept(syscallUUID, addr, pid, connfd, sock->ip_port, NULL, false);
 			printf("syscall_accept success : %d\n", success);
 			if(success) sock->backlog--;
-			// for(it=this->clients.begin(); it!=this->clients.end(); ++it){
-			// 	if(	strcmp(sock->ip_port->ipAddr, "0.0.0.0")==0 || 
-			// 		strcmp(sock->ip_port->ipAddr, it->second->ipAddr)==0 && 
-			// 		(it->second->port==sock->ip_port->port)){
-			// 		std::pair<bool, Ip_port*> p = this->clients.front();
-			// 		bool isSYN = p.first;
-			// 		Ip_port* client_ip_port = p.second;
-			// 		this->clients.pop_front();
-
-			// 		ip_port2sa(addr, client_ip_port);
-			// 		// ip_port2sa(addr, sock->ip_port);
-
-					
-
-			// 		Sock *newsock = (Sock *)malloc(sizeof(Sock));
-			// 		newsock->sock_status = SC_ESTAB;
-			// 		newsock->ip_port = sock->ip_port;
-			// 		// printf("client ip_port : (%s, %u)\n", client_ip_port->ipAddr, client_ip_port->port);
-			// 		// printf("pid_sockfd : (%d, %d)\n", pid, connfd);
-			// 		// printf("%u %u %u %u\n", htons(46759), htons(21053), htons(33500), htons(9999));
-			// 		this->sock_mapping[std::make_pair(pid, connfd)] = newsock;
-			// 		if(it->first) sock->backlog--;
-			// 		SystemCallInterface::returnSystemCall(syscallUUID, connfd);
-			// 		return 0;
-			// 	}		
-			// }
 		}
 		else{
 			accept_block(syscallUUID, connfd, addr);
@@ -767,6 +751,8 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 			// 	ipInt2ipCharptr(dest_ip), dest_port);
 		}
 		else{
+			Sock* server_sock = this->sock_mapping[*server_pid_sockfd];
+			server_sock->sock_status = SC_SYN_RCVD;
 			if(this->sock_mapping[*server_pid_sockfd]->backlog
 				>= this->sock_mapping[*server_pid_sockfd]->maxBacklog){
 				return;
@@ -863,7 +849,7 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 	uint32_t dest_ip32 = u32from8(dest_ip);
 	
 	// Verfiy packet's checksum
-	uint16_t packet_checksum = NetworkUtil::tcp_sum(src_ip32, dest_ip32, tcp_seg, 20);
+	// uint16_t packet_checksum = NetworkUtil::tcp_sum(src_ip32, dest_ip32, tcp_seg, 20);
 	// printf("packet_checksum : %x\n", packet_checksum);
 	// if(packet_checksum != 0xFFFF) return;
 	

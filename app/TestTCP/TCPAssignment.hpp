@@ -26,6 +26,8 @@
 #include <E/E_Common.hpp>
 #include <E/E_TimerModule.hpp>
 #include <E/E_TimeUtil.hpp>
+#include <map>
+#include <deque>
 
 typedef std::pair<int, int> pid_sockfd;
 typedef enum {
@@ -77,6 +79,7 @@ public:
 	TCPAssignment(Host* host);
 	virtual void initialize();
 	virtual void finalize();
+	virtual void send_packet(uint8_t src_ip[4], unsigned short src_port, uint8_t dest_ip[4], unsigned short dest_port, int Flags);
 	virtual char* ipInt2ipCharptr(uint8_t ip_buffer[4]);
 	virtual struct Ip_port* sa2ip_port(struct sockaddr* sa);
 	virtual void ip_port2sa(struct sockaddr* sa, struct Ip_port *p);
@@ -103,7 +106,7 @@ public:
 	// virtual void TimerCallback(void* payload);
 	virtual ~TCPAssignment();
 	int sockfd;
-	std::queue<int> connfds;
+	std::deque<int> connfds;
 	int seqNum;
 	int close_status;
 	int bind_status;
@@ -121,7 +124,7 @@ public:
 	std::map<pid_sockfd, Sock*> sock_mapping;
 	std::map<Ip_port*, Ip_port*> client_server_mapping; 
 	std::deque<std::pair<bool, Ip_port*> > clients;
-	std::vector<unsigned short> INADDR_ANY_PORTS;
+	std::deque<unsigned short> INADDR_ANY_PORTS;
 
 	
 
