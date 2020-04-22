@@ -26,6 +26,8 @@
 #include <E/E_Common.hpp>
 #include <E/E_TimerModule.hpp>
 #include <E/E_TimeUtil.hpp>
+#include <map>
+#include <deque>
 
 typedef std::pair<int, int> pid_sockfd;
 typedef enum {
@@ -33,7 +35,8 @@ typedef enum {
 	SC_LISTEN, 
 	SC_SYN_SENT, 
 	SC_SYN_RCVD, 
-	SC_ESTAB,
+	SC_ESTAB_CLIENT,
+	SC_ESTAB_SERVER,
 	SC_FIN_WAIT1,
 	SC_FIN_WAIT2,
 	SC_CLOSE_WAIT,
@@ -77,14 +80,18 @@ public:
 	TCPAssignment(Host* host);
 	virtual void initialize();
 	virtual void finalize();
+	virtual void send_new_packet(uint8_t src_ip[4], unsigned short src_port, uint8_t dest_ip[4], unsigned short dest_port, int Flags);
+	virtual void send_answer_packet(Packet* packet, uint8_t src_ip[4], unsigned short src_port, uint8_t dest_ip[4], unsigned short dest_port, int flagReceived);
+
 	virtual char* ipInt2ipCharptr(uint8_t ip_buffer[4]);
+	virtual void ipCharptr2ipInt(char* ipCharptr, uint8_t ipInt[4]);
 	virtual struct Ip_port* sa2ip_port(struct sockaddr* sa);
 	virtual void ip_port2sa(struct sockaddr* sa, struct Ip_port *p);
 	virtual void u8from32 (uint8_t u8[4], uint32_t u32);
 	virtual uint32_t u32from8 (uint8_t u8[4]);
 	virtual pid_sockfd* find_pid_sockfd_by_Ip_port(uint8_t dest_ip[4], unsigned short dest_port);
-	virtual void find_client_ip_port(UUID syscallUUID, struct sockaddr* addr, int pid, int connfd, Sock *sock);
-
+	virtual bool lazy_accept(UUID syscallUUID, struct sockaddr* addr, int pid, int connfd, Ip_port* server_ip_port, Ip_port* client_ip_port, bool isLazy);
+	virtual void close_socket(Ip_port* ip_port);
 
 	virtual int syscall_socket(UUID syscallUUID, int pid, int domain, int type__unused, int protocol);
 	virtual int syscall_close(UUID syscallUUID, int pid, int fd);
@@ -98,13 +105,14 @@ public:
 	virtual void connect_block(UUID syscallUUID);
 	virtual void connect_unblock(int status);
 	virtual void accept_block(UUID syscallUUID, int connfd, struct sockaddr* sa);
-	virtual void accept_unblock(uint8_t dest_ip[4], unsigned short dest_port);
+	virtual void accept_unblock(uint8_t src_ip[4], unsigned short src_port, uint8_t dest_ip[4], unsigned short dest_port);
 
 	// virtual void TimerCallback(void* payload);
 	virtual ~TCPAssignment();
 	int sockfd;
-	std::queue<int> connfds;
+	std::deque<int> connfds;
 	int seqNum;
+	int ackNum;
 	int close_status;
 	int bind_status;
 	int connect_status;
@@ -113,15 +121,15 @@ public:
 	int listen_status;
 	int accept_status;
 	bool connect_lock;
-	bool accept_lock;
+	int accept_lock;
 	UUID connect_blockedUUID;
-	UUID accept_blockedUUID;
-	struct sockaddr* accept_blockedSA;
+	std::deque<UUID> accept_blockedUUIDs;
+	std::deque<struct sockaddr*> accept_blockedSAs;
 	Host *host;
 	std::map<pid_sockfd, Sock*> sock_mapping;
 	std::map<Ip_port*, Ip_port*> client_server_mapping; 
 	std::deque<std::pair<bool, Ip_port*> > clients;
-	std::vector<unsigned short> INADDR_ANY_PORTS;
+	std::deque<unsigned short> INADDR_ANY_PORTS;
 
 	
 
