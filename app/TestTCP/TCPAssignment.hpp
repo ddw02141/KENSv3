@@ -56,10 +56,12 @@ typedef struct Ip_port{
 typedef struct Sock{
 	Sock_status sock_status;
 	struct Ip_port *ip_port;
+	struct Ip_port *peer_ip_port;
 	int maxBacklog;
 	int backlog;
-	Sock(Sock_status ss, struct Ip_port *ip_port) : sock_status(ss), ip_port(ip_port){}
-	Sock(): sock_status(SC_CLOSED), ip_port(NULL), maxBacklog(0), backlog(0) {}
+	Sock(Sock_status ss, struct Ip_port *ip_port, struct Ip_port *peer_ip_port, int maxBacklog, int backlog) : 
+		sock_status(ss), ip_port(ip_port), peer_ip_port(peer_ip_port), maxBacklog(maxBacklog), backlog(backlog){}
+	Sock(): sock_status(SC_CLOSED), ip_port(NULL), peer_ip_port(NULL), maxBacklog(0), backlog(0) {}
 }Sock;
 
 namespace E
@@ -89,8 +91,8 @@ public:
 	virtual void ip_port2sa(struct sockaddr* sa, struct Ip_port *p);
 	virtual void u8from32 (uint8_t u8[4], uint32_t u32);
 	virtual uint32_t u32from8 (uint8_t u8[4]);
-	virtual pid_sockfd* find_pid_sockfd_by_Ip_port(uint8_t dest_ip[4], unsigned short dest_port);
-	virtual bool lazy_accept(UUID syscallUUID, struct sockaddr* addr, int pid, int connfd, Ip_port* server_ip_port, Ip_port* client_ip_port, bool isLazy);
+	virtual pid_sockfd* find_pid_sockfd_by_Ip_port_and_status(uint8_t dest_ip[4], unsigned short dest_port, Sock_status sock_status);
+	virtual bool lazy_accept(UUID syscallUUID, struct sockaddr* addr, int pid, Ip_port* server_ip_port, Ip_port* client_ip_port, bool isLazy);
 	virtual void close_socket(Ip_port* ip_port);
 
 	virtual int syscall_socket(UUID syscallUUID, int pid, int domain, int type__unused, int protocol);
@@ -110,7 +112,7 @@ public:
 	// virtual void TimerCallback(void* payload);
 	virtual ~TCPAssignment();
 	int sockfd;
-	std::deque<int> connfds;
+	std::deque<int> pids;
 	int seqNum;
 	int ackNum;
 	int close_status;
