@@ -112,7 +112,6 @@ public:
 	// virtual void TimerCallback(void* payload);
 	virtual ~TCPAssignment();
 	int sockfd;
-	std::deque<int> pids;
 	int seqNum;
 	int ackNum;
 	int close_status;

@@ -36,7 +36,6 @@ TCPAssignment::TCPAssignment(Host* host) : HostModule("TCP", host),
 	this->host = host;
 	this->sockfd = -1;
 	this->accept_status = 0;
-	this->pids = std::deque<int>(); 
 	this->close_status = 0;
 	this->bind_status = 0;
 	this->connect_status = 0;
@@ -59,7 +58,6 @@ TCPAssignment::TCPAssignment(Host* host) : HostModule("TCP", host),
 
 TCPAssignment::~TCPAssignment()
 {
-	this->pids.clear();
 	this->accept_blockedUUIDs.clear();
 	this->accept_blockedSAs.clear();
 	this->sock_mapping.clear();
@@ -80,14 +78,13 @@ void TCPAssignment::finalize()
 }
 
 pid_sockfd* TCPAssignment::find_pid_sockfd_by_Ip_port_and_status(uint8_t dest_ip[4], unsigned short dest_port, Sock_status sock_status){
-	// printf("find_pid_sockfd_by_Ip_port_and_status (%s, %u) status : %d\n", ipInt2ipCharptr(dest_ip), dest_port, sock_status);
+	// printf("find (%s, %u) %d\n", ipInt2ipCharptr(dest_ip), dest_port, sock_status);
 	char *destIP = ipInt2ipCharptr(dest_ip);
 	unsigned short destPort = dest_port;
 	// dest : (192.168.0.7, 3879)
 	std::map<pid_sockfd, Sock*>::iterator it;
 	for(it=this->sock_mapping.begin(); it!=this->sock_mapping.end(); ++it){
-		// if(it->second->sock_status==SC_LISTEN || it->second->sock_status==SC_SYN_RCVD){
-		// printf("(%d, %d) : (%s:%u) status : %d\n", it->first.first, it->first.second, it->second->ip_port->ipAddr, it->second->ip_port->port, it->second->sock_status);
+		// printf("element (%d, %d) : (%s:%u) status : %d\n", it->first.first, it->first.second, it->second->ip_port->ipAddr, it->second->ip_port->port, it->second->sock_status);
 		if(( strcmp(it->second->ip_port->ipAddr, destIP) == 0 || strcmp(it->second->ip_port->ipAddr, "0.0.0.0") == 0) &&
 			it->second->ip_port->port == destPort && it->second->sock_status==sock_status) // If the sockfd is bound
 		{
@@ -264,7 +261,6 @@ void TCPAssignment::accept_block(UUID syscallUUID, int pid, struct sockaddr* sa)
 	printf("accept_block(%lu, %d)\n", syscallUUID, pid);
 	this->accept_lock++;
 	this->accept_blockedUUIDs.push_back(syscallUUID);
-	this->pids.push_back(pid);
 	this->accept_blockedSAs.push_back(sa);
 }
 
@@ -313,6 +309,7 @@ bool TCPAssignment::lazy_accept(UUID syscallUUID, struct sockaddr* addr, int pid
 			printf("lazy accept : Pid_sockfd == NULL\n");
 			return false;
 		}
+		ip_port2sa(addr, server_ip_port);
 		SystemCallInterface::returnSystemCall(syscallUUID, Pid_sockfd->second);
 		return true;
 		// std::deque<std::pair<bool, Ip_port*> >::iterator it;
@@ -360,39 +357,31 @@ bool TCPAssignment::lazy_accept(UUID syscallUUID, struct sockaddr* addr, int pid
 
 void TCPAssignment::accept_unblock(uint8_t src_ip[4], unsigned short src_port, uint8_t dest_ip[4], unsigned short dest_port){
 	printf("accept_unblock on (%s:%u)\n", ipInt2ipCharptr(dest_ip), dest_port);
-	if(this->pids.empty()){
-		printf("this->pids.empty()\n");
+		
+
+	pid_sockfd* Pid_sockfd = find_pid_sockfd_by_Ip_port_and_status(dest_ip, dest_port,SC_SYN_RCVD);
+	if(Pid_sockfd==NULL){
+		printf("Pid_sockfd==NULL\n");
 		return;
 	}
-		
-	else{
-		pid_sockfd* Pid_sockfd = find_pid_sockfd_by_Ip_port_and_status(dest_ip, dest_port,SC_SYN_RCVD);
-		if(Pid_sockfd==NULL){
-			printf("Pid_sockfd==NULL\n");
-			return;
-		}
-		else{
-			// lazy_accept(this->accept_blockedUUIDs.front(), this->accept_blockedSAs.front(), Pid_sockfd->first, 
-			// 	this->connfds.front(), this->sock_mapping[*Pid_sockfd]);
-			Ip_port* client_ip_port = (Ip_port*)malloc(sizeof(Ip_port));
-			client_ip_port->ipAddr = ipInt2ipCharptr(src_ip);
-			client_ip_port->port = src_port;
-			Ip_port* server_ip_port = (Ip_port*)malloc(sizeof(Ip_port));
-			server_ip_port->ipAddr = ipInt2ipCharptr(dest_ip);
-			server_ip_port->port = dest_port;
-			bool success = lazy_accept(this->accept_blockedUUIDs.front(), this->accept_blockedSAs.front(), Pid_sockfd->first, 
-				server_ip_port, client_ip_port, true);
-			if(success) {
-				printf("accept_unblock success : %d\n", success);
-				this->sock_mapping[*Pid_sockfd]->backlog--;
-			}
-
-		}
+	Ip_port* client_ip_port = (Ip_port*)malloc(sizeof(Ip_port));
+	client_ip_port->ipAddr = ipInt2ipCharptr(src_ip);
+	client_ip_port->port = src_port;
+	Ip_port* server_ip_port = (Ip_port*)malloc(sizeof(Ip_port));
+	server_ip_port->ipAddr = ipInt2ipCharptr(dest_ip);
+	server_ip_port->port = dest_port;
+	bool success = lazy_accept(this->accept_blockedUUIDs.front(), this->accept_blockedSAs.front(), Pid_sockfd->first, 
+		server_ip_port, client_ip_port, true);
+	if(success) {
+		printf("accept_unblock success : %d\n", success);
+		this->sock_mapping[*Pid_sockfd]->backlog--;
+		this->sock_mapping[*Pid_sockfd]->sock_status = SC_ESTAB_SERVER;
 	}
-	this->pids.pop_front();
+
 	this->accept_lock--;
 	this->accept_blockedUUIDs.pop_front();
 	this->accept_blockedSAs.pop_front();
+	return;
 }
 
 void TCPAssignment::u8from32 (uint8_t u8[4], uint32_t u32){
@@ -570,7 +559,8 @@ int TCPAssignment::syscall_close(UUID syscallUUID, int pid, int fd){
 		// Maybe wrong
 		else {
 			// printf("SC_ESTAB_SERVER\n");
-			s->sock_status = SC_LAST_ACK;
+			// s->sock_status = SC_LAST_ACK;
+			;
 		}
 
 	}
@@ -1084,7 +1074,9 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 		// server
 		if(server_pid_sockfd==NULL)
 			server_pid_sockfd = find_pid_sockfd_by_Ip_port_and_status(dest_ip, dest_port, SC_ESTAB_SERVER);	
-		if(server_pid_sockfd==NULL) return;	
+		if(server_pid_sockfd==NULL) {
+			return;
+		}	
 		if(this->sock_mapping.count(*server_pid_sockfd)==0) return;
 		Sock *sock = this->sock_mapping[*server_pid_sockfd];
 		printf("sock_status : %d\n", sock->sock_status);
