@@ -197,8 +197,8 @@ void TCPAssignment::send_answer_packet(Packet* packet, uint8_t src_ip[4], unsign
 		// SYNACK -> ACK
 		Flags = (1<<4);
 	}
-	else if(FIN){
-		// FIN -> ACK
+	else if(FIN && ACK){
+		// FINACK -> ACK
 		Flags = (1<<4);
 	}
 
@@ -503,6 +503,7 @@ void TCPAssignment::close_socket(Ip_port* caller_ip_port){
 			}
 		}
 	}
+
 	this->sock_mapping.erase(std::make_pair(Pid_sockfd->first, Pid_sockfd->second));
 	removeFileDescriptor(Pid_sockfd->first, Pid_sockfd->second);
 	shutdown(Pid_sockfd->second, 2);
@@ -1071,6 +1072,10 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 		printf("FINACK\n");
 		// client
 		server_pid_sockfd = find_pid_sockfd_by_Ip_port_and_status(dest_ip, dest_port, SC_FIN_WAIT2);
+		// again client
+		if(server_pid_sockfd==NULL)
+			server_pid_sockfd = find_pid_sockfd_by_Ip_port_and_status(dest_ip, dest_port, SC_FIN_WAIT1);	
+		
 		// server
 		if(server_pid_sockfd==NULL)
 			server_pid_sockfd = find_pid_sockfd_by_Ip_port_and_status(dest_ip, dest_port, SC_ESTAB_SERVER);	
@@ -1159,12 +1164,12 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 	
 
 	send_answer_packet(packet, src_ip, src_port, dest_ip, dest_port, flagReceived);
-	// if(FIN) 
 	// given packet is my responsibility
 	this->freePacket(packet);
+
 	Sock *sock = this->sock_mapping[*server_pid_sockfd];
 	if(FIN && sock->sock_status==SC_TIME_WAIT) {
-		Time t = TimeUtil::makeTime(120, TimeUtil::SEC);
+		Time t = TimeUtil::makeTime(1200, TimeUtil::SEC);
 		TimerModule::addTimer(server_ip_port, t);
 	}
 
