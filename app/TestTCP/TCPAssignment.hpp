@@ -82,8 +82,8 @@ public:
 	TCPAssignment(Host* host);
 	virtual void initialize();
 	virtual void finalize();
-	virtual void send_new_packet(uint8_t src_ip[4], unsigned short src_port, uint8_t dest_ip[4], unsigned short dest_port, int Flags);
-	virtual void send_answer_packet(Packet* packet, uint8_t src_ip[4], unsigned short src_port, uint8_t dest_ip[4], unsigned short dest_port, int flagReceived);
+	virtual void send_new_packet(uint8_t src_ip[4], unsigned short src_port, uint8_t dest_ip[4], unsigned short dest_port, int Flags, bool Simultaneous);
+	virtual void send_answer_packet(Packet* packet, uint8_t src_ip[4], unsigned short src_port, uint8_t dest_ip[4], unsigned short dest_port, int flagReceived, bool Simultaneous);
 
 	virtual char* ipInt2ipCharptr(uint8_t ip_buffer[4]);
 	virtual void ipCharptr2ipInt(char* ipCharptr, uint8_t ipInt[4]);
