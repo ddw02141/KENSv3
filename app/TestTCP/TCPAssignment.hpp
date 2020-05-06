@@ -59,9 +59,11 @@ typedef struct Sock{
 	struct Ip_port *peer_ip_port;
 	int maxBacklog;
 	int backlog;
-	Sock(Sock_status ss, struct Ip_port *ip_port, struct Ip_port *peer_ip_port, int maxBacklog, int backlog) : 
-		sock_status(ss), ip_port(ip_port), peer_ip_port(peer_ip_port), maxBacklog(maxBacklog), backlog(backlog){}
-	Sock(): sock_status(SC_CLOSED), ip_port(NULL), peer_ip_port(NULL), maxBacklog(0), backlog(0) {}
+	uint32_t seqNum;
+	uint32_t ackNum;
+	Sock(Sock_status ss, struct Ip_port *ip_port, struct Ip_port *peer_ip_port, int maxBacklog, int backlog, uint32_t seqNum, uint32_t ackNum): 
+		sock_status(ss), ip_port(ip_port), peer_ip_port(peer_ip_port), maxBacklog(maxBacklog), backlog(backlog), seqNum(seqNum), ackNum(ackNum){}
+	Sock(): sock_status(SC_CLOSED), ip_port(NULL), peer_ip_port(NULL), maxBacklog(0), backlog(0), seqNum(0), ackNum(0) {}
 }Sock;
 
 namespace E
@@ -82,8 +84,8 @@ public:
 	TCPAssignment(Host* host);
 	virtual void initialize();
 	virtual void finalize();
-	virtual void send_new_packet(uint8_t src_ip[4], unsigned short src_port, uint8_t dest_ip[4], unsigned short dest_port, int Flags, bool Simultaneous);
-	virtual void send_answer_packet(Packet* packet, uint8_t src_ip[4], unsigned short src_port, uint8_t dest_ip[4], unsigned short dest_port, int flagReceived, bool Simultaneous);
+	virtual void send_new_packet(Sock* s, uint8_t src_ip[4], unsigned short src_port, uint8_t dest_ip[4], unsigned short dest_port, int Flags, bool Simultaneous);
+	virtual void send_answer_packet(Sock* s, Packet* packet, uint8_t src_ip[4], unsigned short src_port, uint8_t dest_ip[4], unsigned short dest_port, int flagReceived, bool Simultaneous);
 
 	virtual char* ipInt2ipCharptr(uint8_t ip_buffer[4]);
 	virtual void ipCharptr2ipInt(char* ipCharptr, uint8_t ipInt[4]);
@@ -92,7 +94,7 @@ public:
 	virtual void u8from32 (uint8_t u8[4], uint32_t u32);
 	virtual uint32_t u32from8 (uint8_t u8[4]);
 	virtual pid_sockfd* find_pid_sockfd_by_Ip_port_and_status(uint8_t dest_ip[4], unsigned short dest_port, Sock_status sock_status);
-	virtual bool lazy_accept(UUID syscallUUID, struct sockaddr* addr, int pid, Ip_port* server_ip_port, Ip_port* client_ip_port, bool isLazy);
+	virtual bool lazy_accept(UUID syscallUUID, struct sockaddr* addr, int pid, Ip_port* server_ip_port, Ip_port* client_ip_port);
 	virtual void close_socket(Ip_port* ip_port);
 
 	virtual int syscall_socket(UUID syscallUUID, int pid, int domain, int type__unused, int protocol);
@@ -112,8 +114,8 @@ public:
 	// virtual void TimerCallback(void* payload);
 	virtual ~TCPAssignment();
 	int sockfd;
-	int seqNum;
-	int ackNum;
+	// int seqNum;
+	// int ackNum;
 	int close_status;
 	int bind_status;
 	int connect_status;
