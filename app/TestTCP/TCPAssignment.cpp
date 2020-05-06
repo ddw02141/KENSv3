@@ -433,18 +433,6 @@ void TCPAssignment::close_socket(Ip_port* caller_ip_port){
 		printf("close_socket : Pid_sockfd==NULL\n");
 		return;
 	}
-	// INADDR rule fix if needed
-	if(caller_ip_port!=NULL){
-		unsigned short port = caller_ip_port->port;
-		if(strcmp(caller_ip_port->ipAddr, "0.0.0.0")==0){
-			if(!this->INADDR_ANY_PORTS.empty()){
-				auto it = find(this->INADDR_ANY_PORTS.begin(), this->INADDR_ANY_PORTS.end(), port);
-				if(it != this->INADDR_ANY_PORTS.end()){
-					this->INADDR_ANY_PORTS.erase(it);
-				}
-			}
-		}
-	}
 
 	this->sock_mapping.erase(std::make_pair(Pid_sockfd->first, Pid_sockfd->second));
 	removeFileDescriptor(Pid_sockfd->first, Pid_sockfd->second);
@@ -1132,7 +1120,9 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 		// again client
 		if(server_pid_sockfd==NULL)
 			server_pid_sockfd = find_pid_sockfd_by_Ip_port_and_status(dest_ip, dest_port, SC_FIN_WAIT1);	
-		
+		// again again client
+		if(server_pid_sockfd==NULL)
+			server_pid_sockfd = find_pid_sockfd_by_Ip_port_and_status(dest_ip, dest_port, SC_ESTAB_CLIENT);	
 		// server
 		if(server_pid_sockfd==NULL)
 			server_pid_sockfd = find_pid_sockfd_by_Ip_port_and_status(dest_ip, dest_port, SC_ESTAB_SERVER);	
@@ -1220,7 +1210,7 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 		}
 		else if(sock->sock_status==SC_FIN_WAIT1){
 			// 4-way handshaking - client side
-			printf("SC_FIN_WAIT1\n");
+			printf("SC_FIN_WAIT1 -> SC_FIN_WAIT2\n");
 			sock->sock_status=SC_FIN_WAIT2;
 			
 			
@@ -1239,7 +1229,7 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 	this->freePacket(packet);
 
 	
-	if(FIN && sock->sock_status==SC_TIME_WAIT) {
+	if(FIN && ACK && sock->sock_status==SC_TIME_WAIT) {
 		Time t = TimeUtil::makeTime(120, TimeUtil::SEC);
 		TimerModule::addTimer(server_ip_port, t);
 	}
