@@ -216,8 +216,9 @@ void TCPAssignment::send_answer_packet(Sock* s, Packet* packet, uint8_t src_ip[4
 	seqNum = htonl(s->seqNum);
 	printf("s->seqNum : %u\n", s->seqNum);
 	myPacket->writeData(14+24, &seqNum , 4);
-	if(!(Flags== (1<<4)) && !Simultaneous) s->seqNum++;
-
+	// if(!(Flags== (1<<4)) && !Simultaneous) s->seqNum++;
+	if(!(Flags==(1<<4))) s->seqNum++;
+	printf("s->seqNum after add : %u\n", s->seqNum);
 	seqNumReceived = ntohl(seqNumReceived);
 	seqNumReceived++;
 
@@ -1220,11 +1221,20 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 		
 	}
 	Sock *sock = this->sock_mapping[*server_pid_sockfd];
-	if(connfd!=-1){
-		sock = this->sock_mapping[std::make_pair(server_pid_sockfd->first, connfd)];
-		printf("hello\n");
-	}
+	// if(connfd==-1) printf("sock : (%d, %d)\n", server_pid_sockfd->first, server_pid_sockfd->second);
+	// if(connfd!=-1){
+	// 	Sock *listen_sock = this->sock_mapping[*server_pid_sockfd];
+	// 	sock = this->sock_mapping[std::make_pair(server_pid_sockfd->first, connfd)];
+	// 	printf("sock : (%d, %d)\n", server_pid_sockfd->first, connfd);
+	// }
+	
 	send_answer_packet(sock, packet, src_ip, src_port, dest_ip, dest_port, flagReceived, Simultaneous);
+
+	if(connfd!=-1){
+		Sock *conn_sock = this->sock_mapping[std::make_pair(server_pid_sockfd->first, connfd)];
+		conn_sock->seqNum = sock->seqNum;
+		conn_sock->ackNum = sock->ackNum;
+	}
 	// given packet is my responsibility
 	this->freePacket(packet);
 
