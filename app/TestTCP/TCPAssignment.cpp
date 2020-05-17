@@ -44,7 +44,7 @@ TCPAssignment::TCPAssignment(Host* host) : HostModule("TCP", host),
 	this->getsockname_status = 0;
 	this->getpeername_status = 0;
 	this->sock_mapping = std::map<pid_sockfd, Sock*>();
-	this->client_server_mapping = std::map<Ip_port*, Ip_port*>();
+	// this->client_server_mapping = std::map<Ip_port*, Ip_port*>();
 	this->clients = std::deque<std::pair<bool, Ip_port*> >();
 	this->INADDR_ANY_PORTS = std::deque<unsigned short>();
 	this->connect_lock = false;
@@ -61,7 +61,7 @@ TCPAssignment::~TCPAssignment()
 	this->accept_blockedUUIDs.clear();
 	this->accept_blockedSAs.clear();
 	this->sock_mapping.clear();
-	this->client_server_mapping.clear();
+	// this->client_server_mapping.clear();
 	this->clients.clear();
 	this->INADDR_ANY_PORTS.clear();
 	
@@ -704,16 +704,20 @@ int TCPAssignment::syscall_connect(UUID syscallUUID, int pid, int sockfd, struct
 
 		
 		// this->sock_mapping[std::make_pair(pid, sockfd)] = client_sock;
-		
-		Ip_port* server_ip_port_ptr = sa2ip_port(server_addr);
-		if(this->client_server_mapping.count(server_ip_port_ptr)!=0){
-			// printf("Connect Already Exist\n");
+		if(sock->peer_ip_port!=NULL){
+			printf("Connect Already Exist\n");
 			return -1;
 		}
 
-		// Delete Later
-		this->client_server_mapping[server_ip_port_ptr] = client_ip_port_ptr;
-		this->client_server_mapping[client_ip_port_ptr] = server_ip_port_ptr;
+		Ip_port* server_ip_port_ptr = sa2ip_port(server_addr);
+		// if(this->client_server_mapping.count(server_ip_port_ptr)!=0){
+		// 	printf("Connect Already Exist\n");
+		// 	return -1;
+		// }
+
+		// // Delete Later
+		// this->client_server_mapping[server_ip_port_ptr] = client_ip_port_ptr;
+		// this->client_server_mapping[client_ip_port_ptr] = server_ip_port_ptr;
 
 		uint32_t server_ip32 = sin->sin_addr.s_addr;
 		u8from32(server_ip, server_ip32);
@@ -726,6 +730,7 @@ int TCPAssignment::syscall_connect(UUID syscallUUID, int pid, int sockfd, struct
 		// SC_LISTEN => SC_SYN_SENT
 		// client_sock = this->sock_mapping[std::make_pair(pid, sockfd)];
 		sock->ip_port = client_ip_port_ptr;
+		sock->peer_ip_port = server_ip_port_ptr;
 		sock->sock_status = SC_SYN_SENT;
 
 		connect_block(syscallUUID);
@@ -895,7 +900,7 @@ int TCPAssignment::syscall_getsockname(UUID syscallUUID, int pid, int sockfd, st
 }
 
 int TCPAssignment::syscall_getpeername(UUID syscallUUID, int pid, int sockfd, struct sockaddr *addr, socklen_t *addrlen){
-	// printf("syscall_getpeername(%lu, %d, %d)\n", syscallUUID, pid, sockfd);
+	printf("syscall_getpeername(%lu, %d, %d)\n", syscallUUID, pid, sockfd);
 	
 	if(this->sock_mapping.count(std::make_pair(pid, sockfd))==0){
 		// printf("Not bound sockfd %d\n", sockfd);
@@ -906,11 +911,17 @@ int TCPAssignment::syscall_getpeername(UUID syscallUUID, int pid, int sockfd, st
 	// printf("server (%s, %d)\n", server_ip_port->first, server_ip_port->second);
 	// printf("server from scratch (%s, %d)\n", this->sock_mapping_mapping[sockfd]->first, 
 	// 	this->sock_mapping_mapping[sockfd]->second);
-	if(this->client_server_mapping.count(caller_ip_port)==0){
-		// printf("No peer with (%s, %d)\n", caller_ip_port->ipAddr, caller_ip_port->port);
+	// if(this->client_server_mapping.count(caller_ip_port)==0){
+	// 	// printf("No peer with (%s, %d)\n", caller_ip_port->ipAddr, caller_ip_port->port);
+	// 	return -1;
+	// }
+	// Ip_port* peer_ip_port = this->client_server_mapping[caller_ip_port];
+	Ip_port* peer_ip_port = caller_sock->peer_ip_port;
+	if(peer_ip_port==NULL){
+		printf("No peer with (%s, %d)\n", caller_ip_port->ipAddr, caller_ip_port->port);
 		return -1;
 	}
-	Ip_port* peer_ip_port = this->client_server_mapping[caller_ip_port];
+	printf("peer_ip_port : (%s, %u)\n", peer_ip_port->ipAddr, peer_ip_port->port);
 	ip_port2sa(addr, peer_ip_port);
 	return 0;
 }
