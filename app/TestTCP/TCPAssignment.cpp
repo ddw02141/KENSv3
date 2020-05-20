@@ -43,6 +43,8 @@ TCPAssignment::TCPAssignment(Host* host) : HostModule("TCP", host),
 	this->accept_status = 0;
 	this->getsockname_status = 0;
 	this->getpeername_status = 0;
+	this->write_bytes = 0;
+	this->read_bytes = 0;
 	this->sock_mapping = std::map<pid_sockfd, Sock*>();
 	// this->client_server_mapping = std::map<Ip_port*, Ip_port*>();
 	this->clients = std::deque<std::pair<bool, Ip_port*> >();
@@ -98,8 +100,9 @@ pid_sockfd* TCPAssignment::find_pid_sockfd_by_Ip_port_and_status(uint8_t dest_ip
 
 }
 
-void TCPAssignment::send_new_packet(Sock* s, uint8_t src_ip[4], unsigned short src_port, uint8_t dest_ip[4], unsigned short dest_port, int Flags, bool Simultaneous){
+void TCPAssignment::send_new_packet(Sock* s, uint8_t src_ip[4], unsigned short src_port, uint8_t dest_ip[4], unsigned short dest_port, int Flags, bool Simultaneous, size_t count, const void* buf){
 	printf("send_new_packet\n");
+	printf("count : %d\n", count);
 
 	uint32_t src_ip32 = u32from8(src_ip);
 	uint32_t dest_ip32 = u32from8(dest_ip);
@@ -111,9 +114,19 @@ void TCPAssignment::send_new_packet(Sock* s, uint8_t src_ip[4], unsigned short s
 	// server_port = server_ip_port_ptr->port;
 	// client_port = htons(client_port);
 	// server_port = htons(server_port);
+	printf("A\n");
 	uint8_t *tcp_seg = (uint8_t*)malloc(sizeof(uint8_t)*20);
+	printf("B\n");
 	// int Flags = 1<<1; // SYN
-	Packet* myPacket = allocatePacket(54);
+	printf("C\n");
+	Packet* myPacket;
+	printf("D\n");
+	if(count > 0){
+		myPacket = allocatePacket(54+count);
+		printf("allocatePacket(%d)\n", 54+count);
+	}
+	else myPacket = allocatePacket(54);
+	printf("E\n");
 	myPacket->writeData(14+12, &src_ip32, 4);
 	myPacket->writeData(14+16, &dest_ip32, 4);
 	myPacket->writeData(14+20, &src_port, 2);
@@ -142,7 +155,7 @@ void TCPAssignment::send_new_packet(Sock* s, uint8_t src_ip[4], unsigned short s
 	// myPacket->writeData(14+28, &seqNum, 4);
 	// if( Flags & 1) Flags = Flags | ACK;
 	// Flags = Flags | ACK;
-	// printf("write Flags : %d\n", Flags);
+	printf("write Flags : %d\n", Flags);
 	myPacket->writeData(14+33, &Flags, 1);
 	// uint16_t headerlength16 = 5;
 	uint8_t headerlength8 = 5<<4;
@@ -150,6 +163,21 @@ void TCPAssignment::send_new_packet(Sock* s, uint8_t src_ip[4], unsigned short s
 	// headerlength8 = (uint8_t)headerlength16;
 	myPacket->writeData(46, &headerlength8, 1);
 	// printf("headerlength8 : %x\n", headerlength8);
+
+
+	if(count > 0){
+		myPacket->writeData(54, buf, count);
+	}
+
+
+
+
+
+
+
+
+
+
 	uint16_t myPacket_checksum = 0;
 	myPacket->writeData(50, &myPacket_checksum, 2);
 	myPacket->readData(14+20, tcp_seg, 20);
@@ -172,9 +200,10 @@ void TCPAssignment::send_new_packet(Sock* s, uint8_t src_ip[4], unsigned short s
 	this->sendPacket("IPv4", myPacket);
 }
 
+
 void TCPAssignment::send_answer_packet(Sock* s, Packet* packet, uint8_t src_ip[4], unsigned short src_port, uint8_t dest_ip[4], unsigned short dest_port, int flagReceived, bool Simultaneous){
 	printf("send_answer_packet\n");
-	uint32_t seqNumReceived, ackNumReceived, seqNum, ackNum;
+	uint32_t seqNumReceived, seqNum, ackNum;
 	uint8_t *tcp_seg = (uint8_t*)malloc(sizeof(uint8_t)*20);
 	packet->readData(14+24, &seqNumReceived, 4);
 	packet->readData(14+20, tcp_seg, 20);
@@ -407,14 +436,18 @@ int TCPAssignment::syscall_socket(UUID syscallUUID, int pid, int domain, int typ
 	int sockfd = createFileDescriptor(pid);
 	// printf("syscall_socket(%lu, pid : %d, sockfd : %d)\n", syscallUUID, pid, sockfd);
 
-	Sock *sock = (Sock *)malloc(sizeof(Sock));
-	sock->sock_status = SC_CLOSED;
-	sock->ip_port = NULL;
-	sock->peer_ip_port = NULL;
-	sock->backlog = 0;
-	sock->maxBacklog = 0;
-	sock->seqNum = 0;
-	sock->ackNum = 0;
+	// Sock *sock = (Sock *)malloc(sizeof(Sock));
+	// sock->sock_status = SC_CLOSED;
+	// sock->ip_port = NULL;
+	// sock->peer_ip_port = NULL;
+	// sock->backlog = 0;
+	// sock->maxBacklog = 0;
+	// sock->seqNum = 0;
+	// sock->ackNum = 0;
+	// sock->buf = (uint8_t *)calloc(1, 200000);
+	// sock->buf_offset = 0;
+
+	Sock *sock = new Sock(SC_CLOSED, NULL, NULL, 0, 0, 0, 0);
 	this->sock_mapping[std::make_pair(pid, sockfd)] = sock;
 	return sockfd;
 }
@@ -478,7 +511,7 @@ int TCPAssignment::syscall_close(UUID syscallUUID, int pid, int fd){
 		int Flags = 1; //FIN	
 		Flags = Flags | (1<<4); //FINACK
 
-		send_new_packet(s, caller_ip, caller_port, peer_ip, peer_port, Flags, false);
+		send_new_packet(s, caller_ip, caller_port, peer_ip, peer_port, Flags, false, 0, NULL);
 
 		if(s->sock_status==SC_ESTAB_CLIENT) {
 			// printf("SC_ESTAB_CLIENT\n");
@@ -556,7 +589,7 @@ int TCPAssignment::syscall_close(UUID syscallUUID, int pid, int fd){
 		// }
 
 
-		send_new_packet(s, server_ip, server_port, client_ip, client_port, Flags, false);
+		send_new_packet(s, server_ip, server_port, client_ip, client_port, Flags, false, 0, NULL);
 
 		s->sock_status = SC_LAST_ACK;
 
@@ -725,7 +758,7 @@ int TCPAssignment::syscall_connect(UUID syscallUUID, int pid, int sockfd, struct
 		unsigned short server_port = server_ip_port_ptr->port;
 		int Flags = 1<<1; // SYN
 		
-		send_new_packet(sock, client_ip, client_port, server_ip, server_port, Flags, false);
+		send_new_packet(sock, client_ip, client_port, server_ip, server_port, Flags, false, 0, NULL);
 		
 		// SC_LISTEN => SC_SYN_SENT
 		// client_sock = this->sock_mapping[std::make_pair(pid, sockfd)];
@@ -742,7 +775,7 @@ int TCPAssignment::syscall_connect(UUID syscallUUID, int pid, int sockfd, struct
 		struct sockaddr_in* sin;
 		sin = (struct sockaddr_in*)server_addr;
 		uint8_t* casted_server_addr = (uint8_t*)(&(sin->sin_addr));
-		unsigned short client_implicit_port = (this->host)->getRoutingTable(casted_server_addr);
+		// unsigned short client_implicit_port = (this->host)->getRoutingTable(casted_server_addr);
 		// printf("client_implicit_port : %u\n", client_implicit_port);
 
 		
@@ -767,7 +800,7 @@ int TCPAssignment::syscall_connect(UUID syscallUUID, int pid, int sockfd, struct
 		unsigned short server_port = server_ip_port_ptr->port;
 		int Flags = 1<<1; // SYN
 		
-		send_new_packet(sock, client_ip, client_port, server_ip, server_port, Flags, true);
+		send_new_packet(sock, client_ip, client_port, server_ip, server_port, Flags, true, 0, NULL);
 		
 		// SC_LISTEN => SC_SYN_SENT
 		// client_sock = this->sock_mapping[std::make_pair(pid, sockfd)];
@@ -926,6 +959,96 @@ int TCPAssignment::syscall_getpeername(UUID syscallUUID, int pid, int sockfd, st
 	return 0;
 }
 
+size_t TCPAssignment::syscall_write(UUID syscallUUID, int pid, int sockfd, const void *buf, size_t count){
+	printf("syscall_write(%lu, %d, %d)\n", syscallUUID, pid, sockfd);
+	printf("count : %d\n", count);
+	
+	if(this->sock_mapping.count(std::make_pair(pid, sockfd))==0){
+		// printf("Not bound sockfd %d\n", sockfd);
+		return -1;
+	}
+	Sock *write_sock = this->sock_mapping[std::make_pair(pid, sockfd)];
+	Ip_port* caller_ip_port = write_sock->ip_port;
+	Ip_port* peer_ip_port = write_sock->peer_ip_port;
+	uint8_t caller_ip[4];
+	uint8_t peer_ip[4];
+	ipCharptr2ipInt(caller_ip_port->ipAddr, caller_ip);
+	ipCharptr2ipInt(peer_ip_port->ipAddr, peer_ip);
+	unsigned short caller_port = caller_ip_port->port;
+	unsigned short peer_port = peer_ip_port->port;
+	int Flags = (1<<4); //ACK	
+
+	size_t remlen = count;
+	size_t sendlen = 0;
+	
+	while(remlen > 0){
+		size_t buflen = remlen < BUFSIZE ? remlen : BUFSIZE;
+		
+		// memcpy(write_sock->buf + write_sock->buflen, buf, buflen);
+		// write_sock->buflen += buflen;
+
+		
+		printf("sendlen : %d\n", sendlen);
+		printf("buf + sendlen : %p\n", buf + sendlen);
+		send_new_packet(write_sock, caller_ip, caller_port, peer_ip, peer_port, Flags, false, buflen, buf + sendlen);
+		sendlen += buflen;
+		remlen -= buflen;
+	}
+
+	printf("final sendlen : %d\n", sendlen);
+
+	
+
+	
+
+	return sendlen;
+	// printf("write_sock remain buffer : %d\n", BUFSIZE - write_sock->buf_offset);
+	// unsigned int remain_buffer = BUFSIZE - write_sock->buf_offset;
+	// unsigned int write_bytes = remain_buffer < count ? remain_buffer : count;
+	
+	// if(write_bytes==0) return -1;
+
+	// memcpy(write_sock->buf, buf, write_bytes);
+
+	// write_sock->buf_offset += write_bytes;
+
+	// return write_bytes;
+}
+
+size_t TCPAssignment::syscall_read(UUID syscallUUID, int pid, int sockfd, void *buf, size_t count){
+	printf("syscall_read(%lu, %d, %d)\n", syscallUUID, pid, sockfd);
+	printf("count : %d\n", count);
+	if(this->sock_mapping.count(std::make_pair(pid, sockfd))==0){
+		// printf("Not bound sockfd %d\n", sockfd);
+		return -1;
+	}
+	Sock *read_sock = this->sock_mapping[std::make_pair(pid, sockfd)];
+
+	if(read_sock->buf_offset >= read_sock->buflen){
+		return -1;
+	}
+	if(count <= 0){
+		return -1;
+	}
+	int sock_remlen = (read_sock->buflen - read_sock->buf_offset);
+	size_t remlen = count < sock_remlen ? count : sock_remlen;
+	size_t readlen = 0;
+	while(remlen > 0){
+		size_t buflen = remlen < BUFSIZE ? remlen : BUFSIZE;
+		
+		memcpy(buf, read_sock->buf + read_sock->buf_offset , buflen);
+
+
+		read_sock->buf_offset += buflen;
+
+		readlen += buflen;
+		remlen -= buflen;
+	}
+	printf("readlen : %d\n", readlen);
+	return readlen;
+
+}
+
 
 void TCPAssignment::systemCallback(UUID syscallUUID, int pid, const SystemCallParameter& param)
 {
@@ -947,10 +1070,14 @@ void TCPAssignment::systemCallback(UUID syscallUUID, int pid, const SystemCallPa
 		SystemCallInterface::returnSystemCall(syscallUUID, this->close_status);
 		break;
 	case READ:
-		//this->syscall_read(syscallUUID, pid, param.param1_int, param.param2_ptr, param.param3_int);
+		this->read_bytes = this->syscall_read(syscallUUID, pid, param.param1_int, param.param2_ptr, param.param3_int);\
+		printf("this->read_bytes : %d\n", this->read_bytes);
+		SystemCallInterface::returnSystemCall(syscallUUID, this->read_bytes);
 		break;
 	case WRITE:
-		//this->syscall_write(syscallUUID, pid, param.param1_int, param.param2_ptr, param.param3_int);
+		this->write_bytes = this->syscall_write(syscallUUID, pid, param.param1_int, param.param2_ptr, param.param3_int);
+		printf("this->write_bytes : %d\n", this->write_bytes);
+		SystemCallInterface::returnSystemCall(syscallUUID, this->write_bytes);
 		break;
 	case CONNECT:
 		this->connect_status = this->syscall_connect(syscallUUID, pid, param.param1_int,
@@ -1028,7 +1155,7 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 	server_ip_port->ipAddr = ipInt2ipCharptr(dest_ip);
 	server_ip_port->port = dest_port;
 	pid_sockfd *server_pid_sockfd = (pid_sockfd *)malloc(sizeof(pid_sockfd));
-	pid_sockfd *client_pid_sockfd = (pid_sockfd *)malloc(sizeof(pid_sockfd));
+	// pid_sockfd *client_pid_sockfd = (pid_sockfd *)malloc(sizeof(pid_sockfd));
 	// server_pid_sockfd = find_pid_sockfd_by_Ip_port(dest_ip, dest_port);
 
 	bool Simultaneous = false;

@@ -29,6 +29,9 @@
 #include <map>
 #include <deque>
 
+// #define BUFSIZE 512
+
+
 typedef std::pair<int, int> pid_sockfd;
 typedef enum {
 	SC_BOUND,
@@ -53,6 +56,7 @@ typedef struct Ip_port{
 	Ip_port(): ipAddr(NULL), port(0){}
 }Ip_port;
 
+static const int BUFSIZE = 512;
 typedef struct Sock{
 	Sock_status sock_status;
 	struct Ip_port *ip_port;
@@ -61,9 +65,21 @@ typedef struct Sock{
 	int backlog;
 	uint32_t seqNum;
 	uint32_t ackNum;
+	uint8_t* buf;
+	size_t buflen;
+	int buf_offset;
 	Sock(Sock_status ss, struct Ip_port *ip_port, struct Ip_port *peer_ip_port, int maxBacklog, int backlog, uint32_t seqNum, uint32_t ackNum): 
-		sock_status(ss), ip_port(ip_port), peer_ip_port(peer_ip_port), maxBacklog(maxBacklog), backlog(backlog), seqNum(seqNum), ackNum(ackNum){}
-	Sock(): sock_status(SC_CLOSED), ip_port(NULL), peer_ip_port(NULL), maxBacklog(0), backlog(0), seqNum(0), ackNum(0) {}
+		sock_status(ss), ip_port(ip_port), peer_ip_port(peer_ip_port), maxBacklog(maxBacklog), backlog(backlog), seqNum(seqNum), ackNum(ackNum){
+		buf = (uint8_t*) calloc(1, 200000);
+		buf_offset = 0;
+		buflen = 0;
+	}
+
+	~Sock(){
+		free(buf);
+	}
+	
+	// Sock(): sock_status(SC_CLOSED), ip_port(NULL), peer_ip_port(NULL), maxBacklog(0), backlog(0), seqNum(0), ackNum(0) {}
 }Sock;
 
 namespace E
@@ -84,7 +100,7 @@ public:
 	TCPAssignment(Host* host);
 	virtual void initialize();
 	virtual void finalize();
-	virtual void send_new_packet(Sock* s, uint8_t src_ip[4], unsigned short src_port, uint8_t dest_ip[4], unsigned short dest_port, int Flags, bool Simultaneous);
+	virtual void send_new_packet(Sock* s, uint8_t src_ip[4], unsigned short src_port, uint8_t dest_ip[4], unsigned short dest_port, int Flags, bool Simultaneous, size_t count, const void* buf);
 	virtual void send_answer_packet(Sock* s, Packet* packet, uint8_t src_ip[4], unsigned short src_port, uint8_t dest_ip[4], unsigned short dest_port, int flagReceived, bool Simultaneous);
 
 	virtual char* ipInt2ipCharptr(uint8_t ip_buffer[4]);
@@ -105,6 +121,8 @@ public:
 	virtual int syscall_getpeername(UUID syscallUUID, int pid, int sockfd, struct sockaddr *addr, socklen_t *addrlen);
 	virtual int syscall_listen(UUID syscallUUID, int pid, int sockfd, int backlog);
 	virtual int syscall_accept(UUID syscallUUID, int pid, int sockfd, struct sockaddr *addr, socklen_t *addrlen);
+	virtual size_t syscall_write(UUID syscallUUID, int pid, int sockfd, const void *buf, size_t count);
+	virtual size_t syscall_read(UUID syscallUUID, int pid, int sockfd, void *buf, size_t count);
 
 	virtual void connect_block(UUID syscallUUID);
 	virtual void connect_unblock(int status);
@@ -125,6 +143,8 @@ public:
 	int accept_status;
 	bool connect_lock;
 	int accept_lock;
+	size_t write_bytes;
+	size_t read_bytes;
 	UUID connect_blockedUUID;
 	std::deque<UUID> accept_blockedUUIDs;
 	std::deque<struct sockaddr*> accept_blockedSAs;
